@@ -1,0 +1,36 @@
+# Phase 1 — jailbreak + tweak layer
+
+```
+iPhone 6 → checkra1n → jailbroken iOS → Theos/tweaks → OMERTA components
+```
+
+Merged in from the standalone `OMERTAiOS-tweak` build:
+
+```
+phase1/
+├── OMERTA-iOS-PLAN.md         # reality-check + staged build plan (superseded day-to-day by ../PLAN.md)
+├── OMERTAiOS-tweak/           # Objective-C/Theos tweak source (owner-lock overlay)
+└── toolchain/
+    ├── 01-jailbreak-iphone6-checkra1n.md
+    └── 02-theos-bootstrap-mint.sh
+```
+
+Note: `toolchain/03-odyssey-bootstrap-and-headless-debug.md`, referenced by
+`OMERTA-iOS-PLAN.md`, wasn't present in the source directory at merge time —
+only `01-jailbreak-iphone6-checkra1n.md` and `02-theos-bootstrap-mint.sh`
+carried over. Add the missing doc here if it turns up elsewhere.
+
+## What's in `OMERTAiOS-tweak/`
+
+A Theos tweak that hooks SpringBoard and demands an owner PIN (PBKDF2-hashed,
+stored in the Keychain) before the real home screen becomes usable. See
+`OMERTAiOS-tweak/README.md` for build/install/test steps. Build artifacts
+(`.theos/`, `packages/*.deb`, restore logs) were intentionally left out of
+this merge — they're local build scratch, not source.
+
+## Why it matters for phase2
+
+`toolchain/01-jailbreak-iphone6-checkra1n.md` should stay consistent with
+`../phase2/README.md` and `../tools/dfu/detect.sh` on how they talk to the
+iPhone 6 in DFU/checkra1n mode, rather than keeping two separate procedures
+for the same device — worth a pass to fold them together.

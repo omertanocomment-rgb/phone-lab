@@ -1,0 +1,9 @@
+Package: com.omerta.iosui
+Name: OMERTA iOS
+Version: 0.1.0
+Architecture: iphoneos-arm
+Description: OMERTA privacy shell for jailbroken iOS -- owner-lock overlay (Phase 1)
+Maintainer: OMERTA
+Author: OMERTA
+Section: Tweaks
+Depends: firmware (>= 12.0), mobilesubstrate

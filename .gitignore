@@ -1,0 +1,14 @@
+# pongoOS is cloned fresh at build time (CI or local), not vendored
+phase2/pongo-src/
+
+# build scratch
+phase2/build/
+phase2/modules/*/build/
+*.o
+*.bin.tmp
+
+# downloaded CI artifacts land here locally; keep the dir, not the contents
+output/*
+!output/.gitkeep
+
+.DS_Store

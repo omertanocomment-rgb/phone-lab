@@ -1,0 +1,69 @@
+name: OMERTA iOS - build pongoOS + omerta_boot module
+
+# Builds upstream pongoOS (Pongo.bin / PongoConsolidated.bin) and the
+# OMERTA loadable module, on Linux, via GitHub Actions -- matching the
+# pattern already used in omerta-bootloader-toolkit and
+# omerta-rootforge-buildv3, since the ld64/cctools-strip toolchain
+# pongoOS needs isn't something to fight with in Termux.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "phase2/**"
+      - ".github/workflows/build-pongo.yml"
+  workflow_dispatch:
+    inputs:
+      pongo_ref:
+        description: "checkra1n/PongoOS git ref to build against"
+        required: false
+        default: "master"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout OMERTA iOS
+        uses: actions/checkout@v4
+
+      - name: Install checkra1n's ld64 + cctools-strip (Debian repo, per upstream pongoOS README)
+        run: |
+          echo 'deb https://assets.checkra.in/debian /' | sudo tee /etc/apt/sources.list.d/checkra1n.list
+          curl -fsSL https://assets.checkra.in/debian/archive.key | sudo apt-key add -
+          sudo apt-get update
+          sudo apt-get install -y ld64 cctools-strip clang git
+
+      - name: Clone pongoOS
+        run: |
+          REF="${{ github.event.inputs.pongo_ref || 'master' }}"
+          git clone --recurse-submodules https://github.com/checkra1n/PongoOS.git phase2/pongo-src
+          cd phase2/pongo-src
+          git checkout "$REF"
+          git submodule update --init --recursive
+
+      - name: Build pongoOS (Pongo.bin / PongoConsolidated.bin)
+        working-directory: phase2/pongo-src
+        run: |
+          EMBEDDED_CC=clang EMBEDDED_LDFLAGS=-fuse-ld=/usr/bin/ld64 STRIP=cctools-strip make all
+
+      - name: Build OMERTA boot module
+        working-directory: phase2/modules/omerta_boot
+        run: |
+          EMBEDDED_CC=clang EMBEDDED_LDFLAGS=-fuse-ld=/usr/bin/ld64 STRIP=cctools-strip make all PONGO_SRC=../../pongo-src
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          cp phase2/pongo-src/build/Pongo.bin out/
+          cp phase2/pongo-src/build/PongoConsolidated.bin out/
+          cp phase2/pongo-src/build/checkra1n-kpf-pongo out/
+          cp phase2/modules/omerta_boot/build/omerta_boot out/
+          echo "Built from checkra1n/PongoOS@$(git -C phase2/pongo-src rev-parse HEAD)" > out/BUILD_INFO.txt
+          date -u >> out/BUILD_INFO.txt
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pongo-build
+          path: out/
+          retention-days: 30
