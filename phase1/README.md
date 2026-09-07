@@ -9,12 +9,24 @@ Merged in from the standalone `OMERTAiOS-tweak` build:
 ```
 phase1/
 ├── OMERTA-iOS-PLAN.md         # reality-check + staged build plan (superseded day-to-day by ../PLAN.md)
+├── install-omerta-ios.sh      # scripted headless install: bootstrap dpkg/apt/Sileo, LibHooker, then the tweak
 ├── OMERTAiOS-tweak/           # Objective-C/Theos tweak source (owner-lock overlay)
 └── toolchain/
     ├── 01-jailbreak-iphone6-checkra1n.md
     ├── 02-theos-bootstrap-mint.sh
     └── 03-odyssey-bootstrap-and-headless-debug.md
 ```
+
+## What's in `install-omerta-ios.sh`
+
+An idempotent, headless installer: bootstraps dpkg/apt/Sileo on a
+checkra1n'd device over SSH (with automatic recovery from two real
+dpkg/apt bugs — a `MaxLoopCount` cycle and an apt segfault mid-upgrade),
+installs LibHooker as the mobilesubstrate provider, then builds/installs
+`OMERTAiOS-tweak`. Optionally walks through setting a temporary test PIN
+(via a scratch `Tweak.xm` copy that's restored afterward, so no PIN ever
+lands in source) and installing an SSH key for passwordless access. Run
+`./install-omerta-ios.sh --help` for options.
 
 ## What's in `OMERTAiOS-tweak/`
 
