@@ -168,25 +168,60 @@ python3 ../xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py <ramdisk-fil
 fsck.hfsplus -n <ramdisk-file>.out   # confirm non-journaled before trusting RW mount
 ```
 
-## If this is picked up again
+## Update 2026-09-08 (3): PARKED — real blocker is decmpfs, not journaling
+
+The `sudo mount` above was actually run. It succeeded — real-device RW
+mount confirmed working on the genuine target ramdisk, not just the
+synthetic test volume. But once mounted, **every executable and every
+plist read back as a 0-byte empty file** (`sbin/launchd`,
+`usr/local/bin/restored_external`, all four `LaunchDaemons/*.plist`,
+`bin/cat`, `bin/mv`, etc. — 237 files total). Firmware blobs and PNGs
+(`usr/standalone/firmware/*.bin`, `usr/share/progressui/images-*/*.png`)
+came through fine with real content.
+
+Root cause, confirmed via `python3 -c "os.listxattr(...)"` (not guessed):
+the empty files carry an `osx.com.apple.decmpf` extended attribute
+(`com.apple.decmpfs`, truncated by the driver's namespace prefixing) —
+Apple's transparent on-disk file compression. `getxattr` on the value
+fails ("No data available"). **The mainline Linux `hfsplus` kernel
+driver does not implement `decmpfs` decompression** — macOS's own kernel
+decompresses these transparently on read; Linux's driver just exposes an
+empty data fork. This is why the write-a-testfile validation earlier
+worked fine (that file was never decmpfs-compressed) while every real
+system binary on the actual ramdisk is unreadable through this mount.
+
+**This is where the project stops, by explicit decision, not a
+technical dead end that was fully exhausted.** Fixing it for real would
+mean writing (or finding) a working userspace `decmpfs` decoder for
+Linux — the compression schemes involved (zlib- or LZVN-backed) are
+documented, but nothing off-the-shelf was found or attempted here — or
+falling back to macOS/a VM for just this one decode-and-patch step. Given
+this is already the third layered blocker (macOS-only `hdiutil` tooling
+→ resolved via Linux `hfsplus` RW mount → decmpfs unreadable) on top of
+an already-acknowledged device/SoC mismatch (this targets iPhone 6s
+Plus/A9/iOS 12.1, not the project's real iPhone 6/A8/iOS 12.5.8), further
+investment here isn't worth it relative to just recovering the real
+device. **Parked as of 2026-09-08.**
+
+## If this is picked up again anyway
 
 1. ~~Try `sudo mount -t hfsplus -o rw,loop hfs.main /mnt/somewhere`~~ —
    **done, confirmed working for non-journaled volumes.**
 2. ~~Check whether the real target ramdisk is journaled~~ — **done,
-   confirmed NOT journaled.** RW mount is expected to work; untested only
-   because it needs interactive sudo.
-3. Someone needs to actually run the `sudo mount` command above by hand,
-   then walk through the tutorial's rsync/launchd-patch/jtool-sign steps
-   against `./mnt` instead of a macOS `/Volumes/...` mountpoint.
-4. `jtool2`'s Linux build still needs verifying for the two ad-hoc-signing
-   steps (`/bin/tunnel`, patched `launchd`) — untouched by this update.
-5. Everything from "clone xnu-qemu-arm64" and "configure/make" onward in
+   confirmed NOT journaled.**
+3. ~~Run the actual `sudo mount` against the real ramdisk~~ — **done.
+   Mount works; files are unreadable due to decmpfs, see above.**
+4. Real next step would be sourcing/writing a Linux decmpfs decoder (or
+   using macOS/a VM for just the decode-and-patch stage, then copying the
+   patched image back) — not attempted, not a quick unblock.
+5. `jtool2`'s Linux build still needs verifying for the two ad-hoc-signing
+   steps (`/bin/tunnel`, patched `launchd`) — moot until #4 is solved.
+6. Everything from "clone xnu-qemu-arm64" and "configure/make" onward in
    `docs/upstream-build-tutorial.md` is Linux-native and just needs
-   `source ~/.bashrc.emulator-env` first for the dependency prefix.
-6. Not yet sourced: the second, much larger OS disk image (referred to as
+   `source ~/.bashrc.emulator-env` first for the dependency prefix — this
+   part was never blocked, just not reached because disk-image prep comes
+   first in the tutorial's own sequence.
+7. Not yet sourced: the second, much larger OS disk image (referred to as
    `048-31952-103.dmg` in the tutorial, the "N56N66OS" volume used as the
-   rsync source) — needed for the actual file content that gets copied
-   into the ramdisk/secondary disk. Not fetched in this session; may
-   require checking `payload.encrypted` the way
-   `phase3/ramdisk/tools/fetch_ramdisk.py` does for the restore ramdisk,
-   since OS-partition dmgs are more often encrypted than restore ramdisks.
+   rsync source) — would hit the same decmpfs problem, likely worse
+   (larger, more heavily compressed system files).
