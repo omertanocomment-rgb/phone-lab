@@ -5,11 +5,20 @@
 # Uses irecovery / ideviceinfo, the two tools your ios-tooling-builder
 # project already produces for 32-bit Android/Termux (libirecovery +
 # libimobiledevice). This script is deliberately dumb: it just tells you
-# what state the phone is in, it doesn't drive it into DFU for you --
-# that's a manual button-combo step on the iPhone 6 (hold Power+Home,
-# release Power after ~10s while keeping Home, until the screen stays
-# black -- get the exact timing from phase1/toolchain/01-jailbreak-iphone6-checkra1n.md
-# once that's merged in, rather than trusting a generic number here).
+# what state the phone is in, it doesn't drive it into DFU for you.
+#
+# Exact DFU button combo for the iPhone 6 (verified in
+# ../../phase1/toolchain/01-jailbreak-iphone6-checkra1n.md against real
+# hardware, iOS 12.5.8):
+#   1. Connect the phone via USB.
+#   2. Power the phone off completely.
+#   3. Hold Power for 3 seconds.
+#   4. Without releasing Power, also hold Home for 10 seconds.
+#   5. Release Power only, keep holding Home for another ~5-10 seconds.
+#   6. Screen stays completely black (no Apple logo, no "connect to
+#      iTunes") -- that's DFU. Apple logo = held Power too long, redo from
+#      step 2. "Connect to iTunes" = released Home too early (recovery
+#      mode, not DFU), redo from step 2.
 #
 set -euo pipefail
 

@@ -5,6 +5,15 @@ name: OMERTA iOS - build pongoOS + omerta_boot module
 # pattern already used in omerta-bootloader-toolkit and
 # omerta-rootforge-buildv3, since the ld64/cctools-strip toolchain
 # pongoOS needs isn't something to fight with in Termux.
+#
+# Pinned to ubuntu-24.04 (not ubuntu-latest) and every flag/patch below
+# is copied from an actual successful build run on that exact image
+# (clang 18.1.3), not assumed from the upstream README alone. Three
+# real issues showed up building on a modern Ubuntu/clang that don't
+# show up on whatever older toolchain the pongoOS team builds with --
+# see the comments at each step. If GitHub ever moves ubuntu-24.04's
+# default clang forward and this starts failing again, that's the
+# first place to look.
 
 on:
   push:
@@ -21,17 +30,22 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout OMERTA iOS
         uses: actions/checkout@v4
 
-      - name: Install checkra1n's ld64 + cctools-strip (Debian repo, per upstream pongoOS README)
+      - name: Install ld64 + cctools-strip (checkra1n's Debian repo) + xxd
         run: |
           echo 'deb https://assets.checkra.in/debian /' | sudo tee /etc/apt/sources.list.d/checkra1n.list
           curl -fsSL https://assets.checkra.in/debian/archive.key | sudo apt-key add -
           sudo apt-get update
-          sudo apt-get install -y ld64 cctools-strip clang git
+          # Issue 1: ld64's Debian package depends on libssl1.1, which
+          # Ubuntu 24.04 (Noble) no longer ships (superseded by
+          # libssl3). Pull it straight from the Focal security archive.
+          curl -fsSL -o /tmp/libssl1.1.deb "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb"
+          sudo dpkg -i /tmp/libssl1.1.deb
+          sudo apt-get install -y ld64 cctools-strip clang git xxd
 
       - name: Clone pongoOS
         run: |
@@ -41,15 +55,47 @@ jobs:
           git checkout "$REF"
           git submodule update --init --recursive
 
+      - name: Patch pongoOS for modern clang (upstream bug, not ours)
+        working-directory: phase2/pongo-src
+        run: |
+          # Issue 2: src/kernel/task.c calls va_start()/va_end() without
+          # including <stdarg.h>. Older clang silently treated these as
+          # builtins anyway; clang 18 does not, and links fail with
+          # "Undefined symbols ... _va_start". One-line upstream fix,
+          # applied idempotently in case a future pongoOS release
+          # already has it.
+          grep -q '#include <stdarg.h>' src/kernel/task.c || \
+            sed -i '/#include <stdlib.h>/a #include <stdarg.h>' src/kernel/task.c
+          grep -q '#include <stdarg.h>' src/kernel/task.c
+
       - name: Build pongoOS (Pongo.bin / PongoConsolidated.bin)
         working-directory: phase2/pongo-src
         run: |
-          EMBEDDED_CC=clang EMBEDDED_LDFLAGS=-fuse-ld=/usr/bin/ld64 STRIP=cctools-strip make all
+          # Issue 3: clang 18 hard-errors (not just warns) on implicit
+          # function declarations and on a couple of set-but-unused
+          # locals that -Werror then also catches -- none of that is
+          # this project's code, it's pongoOS's own src/kernel/mm.c and
+          # checkra1n/kpf/main.c under a stricter compiler than they
+          # target. -Wno-error and -Wno-implicit-function-declaration
+          # downgrade those back to warnings without touching source.
+          # Separately, -flto means clang emits LLVM bitcode objects
+          # that ld64 needs libLTO.so to process -- point it at the
+          # apt-installed LLVM 18's copy explicitly.
+          EMBEDDED_CC=clang \
+          EMBEDDED_LDFLAGS="-fuse-ld=/usr/bin/ld64 -Wl,-lto_library,/usr/lib/llvm-18/lib/libLTO.so.18.1" \
+          STRIP=cctools-strip \
+          EMBEDDED_CFLAGS="-Wno-error -Wno-implicit-function-declaration" \
+          make all
 
       - name: Build OMERTA boot module
         working-directory: phase2/modules/omerta_boot
         run: |
-          EMBEDDED_CC=clang EMBEDDED_LDFLAGS=-fuse-ld=/usr/bin/ld64 STRIP=cctools-strip make all PONGO_SRC=../../pongo-src
+          EMBEDDED_CC=clang \
+          EMBEDDED_LDFLAGS="-fuse-ld=/usr/bin/ld64 -Wl,-lto_library,/usr/lib/llvm-18/lib/libLTO.so.18.1" \
+          STRIP=cctools-strip \
+          EMBEDDED_CFLAGS="-Wno-error -Wno-implicit-function-declaration" \
+          PONGO_SRC=../../pongo-src \
+          make all
 
       - name: Collect artifacts
         run: |
@@ -58,8 +104,11 @@ jobs:
           cp phase2/pongo-src/build/PongoConsolidated.bin out/
           cp phase2/pongo-src/build/checkra1n-kpf-pongo out/
           cp phase2/modules/omerta_boot/build/omerta_boot out/
-          echo "Built from checkra1n/PongoOS@$(git -C phase2/pongo-src rev-parse HEAD)" > out/BUILD_INFO.txt
-          date -u >> out/BUILD_INFO.txt
+          {
+            echo "Built from checkra1n/PongoOS@$(git -C phase2/pongo-src rev-parse HEAD)"
+            date -u
+            echo "Patched src/kernel/task.c: added #include <stdarg.h> (see workflow comments)"
+          } > out/BUILD_INFO.txt
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

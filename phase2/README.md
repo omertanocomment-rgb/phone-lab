@@ -2,6 +2,8 @@
 
 Everything here is checked against the real upstream `checkra1n/PongoOS` source (Makefile, `example/testmodule/`, `example/include/pongo.h`, `src/shell/command.c`, `scripts/module_load.py`, `scripts/boot-checkra1n.py`) — not guessed at.
 
+**Same `checkra1n` binary as phase1, different flag.** `../phase1/toolchain/01-jailbreak-iphone6-checkra1n.md` already has you running `sudo ./checkra1n` with no `-k` flag to fully jailbreak the phone (checkra1n's default mode: exploit + patch + boot straight to a jailbroken iOS). Everything below uses that exact same binary (checkra1n 0.12.4 — matches the `CHECKRA1N_VERSION` this pongoOS build embeds) with `-k <file>` added, which instead boots the phone into *your* Pongo binary and stops there — no jailbreak, no iOS boot, unless you explicitly send `bootx` afterward. You don't need a second install; whatever `~/checkra1n/checkra1n` phase1 already has you using works here too. Don't run both modes at once — reboot/re-DFU between a `-k` session and a normal jailbreak session.
+
 ## Layout
 
 ```
@@ -30,23 +32,54 @@ Put these in `../output/`.
 
 ## Option B: build locally (Linux host, not Termux)
 
-pongoOS needs `ld64` and `cctools-strip`, which checkra1n ships as Debian packages:
+**This exact sequence was actually run end-to-end (Ubuntu 24.04, clang 18.1.3) to produce real, verified `Pongo.bin` / `PongoConsolidated.bin` / `checkra1n-kpf-pongo` / `omerta_boot` binaries** — not copied from the upstream README and assumed to work. Three things needed fixing beyond the README's own instructions, because modern Ubuntu/clang is stricter than whatever the pongoOS team builds with; the CI workflow applies the same three fixes:
 
 ```bash
+# 1. ld64's Debian package depends on libssl1.1, which Ubuntu 24.04
+#    (Noble) no longer ships. Pull it from the Focal security archive first.
+curl -fsSL -o /tmp/libssl1.1.deb "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb"
+sudo dpkg -i /tmp/libssl1.1.deb
+
 echo 'deb https://assets.checkra.in/debian /' | sudo tee /etc/apt/sources.list.d/checkra1n.list
 curl -fsSL https://assets.checkra.in/debian/archive.key | sudo apt-key add -
 sudo apt-get update
-sudo apt-get install -y ld64 cctools-strip clang git
+sudo apt-get install -y ld64 cctools-strip clang git xxd   # xxd is needed by the Makefile's own PongoConsolidated.bin step
 
 git clone --recurse-submodules https://github.com/checkra1n/PongoOS.git phase2/pongo-src
 cd phase2/pongo-src
-EMBEDDED_CC=clang EMBEDDED_LDFLAGS=-fuse-ld=/usr/bin/ld64 STRIP=cctools-strip make all
+
+# 2. src/kernel/task.c calls va_start()/va_end() without including
+#    <stdarg.h>. Older clang treated these as builtins regardless;
+#    clang 18 does not, and the link fails on undefined _va_start.
+#    One-line upstream bug, not ours -- patch it in:
+grep -q '#include <stdarg.h>' src/kernel/task.c || \
+  sed -i '/#include <stdlib.h>/a #include <stdarg.h>' src/kernel/task.c
+
+# 3. clang 18 hard-errors on implicit-function-declaration and on a
+#    couple of set-but-unused locals in pongoOS's own mm.c/kpf main.c
+#    that -Werror then also catches. -flto means ld64 needs libLTO.so
+#    to process the bitcode objects clang emits -- point it at the
+#    apt-installed LLVM 18's copy explicitly.
+EMBEDDED_CC=clang \
+EMBEDDED_LDFLAGS="-fuse-ld=/usr/bin/ld64 -Wl,-lto_library,/usr/lib/llvm-18/lib/libLTO.so.18.1" \
+STRIP=cctools-strip \
+EMBEDDED_CFLAGS="-Wno-error -Wno-implicit-function-declaration" \
+make all
 cd -
 
 cd phase2/modules/omerta_boot
-EMBEDDED_CC=clang EMBEDDED_LDFLAGS=-fuse-ld=/usr/bin/ld64 STRIP=cctools-strip make all
+EMBEDDED_CC=clang \
+EMBEDDED_LDFLAGS="-fuse-ld=/usr/bin/ld64 -Wl,-lto_library,/usr/lib/llvm-18/lib/libLTO.so.18.1" \
+STRIP=cctools-strip \
+EMBEDDED_CFLAGS="-Wno-error -Wno-implicit-function-declaration" \
+PONGO_SRC=../../pongo-src \
+make all
 cd -
 ```
+
+Confirms as: `build/Pongo.bin` and `build/PongoConsolidated.bin` as raw bare-metal arm64 binaries, `build/checkra1n-kpf-pongo` and `phase2/modules/omerta_boot/build/omerta_boot` as `Mach-O 64-bit arm64 kext bundle`s (`file` on the output binary confirms this). `strings` on `omerta_boot` shows the real registered command/strings (`omerta`, `show the OMERTA iOS boot status banner`, `omerta_boot`, the banner text) baked into the binary, confirming the module ABI in `main.c` actually compiles and links against real pongoOS/newlib headers, not just plausible-looking C.
+
+If you hit a different clang version's own set of warnings-turned-errors on some other distro, the pattern is the same: `EMBEDDED_CFLAGS="-Wno-error -Wno-<specific-warning>"` widens without ever touching pongoOS's own source, except the one genuine upstream bug (missing `#include <stdarg.h>`) which has no such flag-only fix.
 
 This is an x86_64/arm64 Linux (or macOS) host thing, not a Termux/on-device thing — same reasoning as why `omerta-bootloader-toolkit`'s APK compilation moved to GitHub Actions rather than fighting `dl.google.com` from the sandbox. Termux is fine for driving the *device side* (DFU detection, `irecovery`, running `omerta_load.py` once binaries exist) — just not for the pongoOS cross-compile itself, since `ld64`/`cctools-strip` aren't Termux packages.
 

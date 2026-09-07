@@ -28,12 +28,16 @@ This repo is organized in stages so we never pretend a tweak `.deb` or a Pongo b
                  (phase1 jailbreak/tweak layer)
 ```
 
+## Current blocker (read this first)
+
+Phase 1's tweak is code-complete and verified over SSH (installs cleanly, hook fires, Keychain PIN write confirmed via syslog) but the on-screen lock overlay has never actually been *seen* — the test iPhone 6 turned out to be iCloud Activation Locked by a previous owner, which crash-loops SpringBoard independent of this tweak. There's no legitimate software fix for Activation Lock and none should be attempted (original owner, Apple Support + proof of purchase, or an MDM bypass code for an enterprise unit are the only real paths — or test on a second, clean iPhone 6/6s-class device instead). Per the plan's own rule, the tweak's *internal* Phase 2 (duress PIN) stays paused until that visual confirmation happens for real. See `phase1/README.md` for the full picture, including why this repo's own `phase2/` (pongoOS) is a separate, unaffected track.
+
 ## Directory layout
 
 | Path | Status | What it is |
 |---|---|---|
-| `phase1/` | **placeholder — needs your ZIP** | Jailbreak + Theos tweak/toolchain work (checkra1n bootstrap, Theos, Odyssey headless debug). Drop `OMERTA-iOS-Phase1-final.zip` contents here to merge. |
-| `phase2/` | **built in this scaffold** | pongoOS boot environment: build system, OMERTA Pongo module (`omerta_boot`), boot/status screen, checkra1n `-k` wrapper. |
+| `phase1/` | **merged, real-device-tested** | Jailbreak + Theos tweak/toolchain work (checkra1n bootstrap, Theos, Odyssey headless debug). From `OMERTA-iOS-Phase1-final.zip`. Currently blocked on the Activation-Lock issue above. |
+| `phase2/` | **built in this scaffold** | pongoOS boot environment: build system, OMERTA Pongo module (`omerta_boot`), boot/status screen, checkra1n `-k` wrapper. Unaffected by the phase1 blocker — operates entirely pre-boot. |
 | `phase3/` | stub | Future: persistent kernel/ramdisk/userspace/rootfs work. Not started — this is the "genuine custom OS" tier and depends on what phase2 proves out. |
 | `tools/` | scaffolded | `dfu/` device detection, `diagnostics/`, `packaging/` — device-agnostic helper scripts. |
 | `output/` | empty | CI-built artifacts land here when you download them from GitHub Actions (see below). |

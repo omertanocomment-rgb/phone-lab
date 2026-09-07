@@ -4,20 +4,21 @@
 
 `checkra1n` is a boot/jailbreak/bootstrap tool, not an IPSW installer — there is no `--export`/`--install-ipsw` flag because a custom firmware image and a jailbreak bootstrap are architecturally different things. The existing `OMERTA-iOS-Phase1-final.zip` (Theos tweak source, checkra1n jailbreak notes, Odyssey headless debug notes) is real Phase 1 work but it's a userspace jailbreak/tweak layer, not a bootable OS. This plan gets from "jailbreak + tweaks" to "iPhone 6 boots into an OMERTA-branded pre-boot / status environment" without ever mislabeling an intermediate artifact as a finished firmware image.
 
-## Phase 1 — Jailbreak + tweak layer (existing, needs merge)
+## Phase 1 — Jailbreak + tweak layer (merged, real-device-tested)
 
 ```
 iPhone 6 → checkra1n → jailbroken iOS → Theos/tweaks → OMERTA components
 ```
 
-Contents per the uploaded ZIP:
-- `OMERTA-iOS-PLAN.md`
-- `OMERTAiOS-tweak/` — Objective-C/Theos tweak source
+Contents, merged from `OMERTA-iOS-Phase1-final.zip`:
+- `OMERTA-iOS-PLAN.md` — its own 5-phase roadmap for the tweak (owner-lock → duress PIN → Safe Mode → hidden control hub → package), separate from this file's Phase 1/2/3
+- `OMERTAiOS-tweak/` — Objective-C/Theos tweak source, plus a built, tested `.deb`
 - `toolchain/01-jailbreak-iphone6-checkra1n.md`
 - `toolchain/02-theos-bootstrap-mint.sh`
 - `toolchain/03-odyssey-bootstrap-and-headless-debug.md`
+- `install-omerta-ios.sh` — end-to-end scripted install with recovery for the known dpkg/apt bugs
 
-**Status: pending merge.** This scaffold doesn't have the ZIP in-session — drop its contents into `phase1/` (see `phase1/README.md`) and it slots straight into this tree.
+**Status: code-complete and verified over SSH — visual confirmation blocked.** The tweak installs cleanly, its SpringBoard hook fires, and its Keychain PIN write is independently confirmed via syslog. What's not yet confirmed is the lock overlay actually rendering, because the test unit is iCloud Activation Locked from a previous owner (unrelated to the tweak — see `phase1/toolchain/03-odyssey-bootstrap-and-headless-debug.md` section 5). No software workaround exists or should be attempted for Activation Lock. Per the plan's own stated rule, its internal Phase 2 (duress PIN) does not start until this is resolved for real, either on this unit through a legitimate path or on a second clean device.
 
 ## Phase 2 — pongoOS boot environment (this scaffold, built)
 
