@@ -112,17 +112,81 @@ sudo mount -t hfsplus -o rw,loop,uid=$(id -u),gid=$(id -g) <image> <mountpoint>
 sudo umount <mountpoint>
 ```
 
+## Update 2026-09-08 (2): real ramdisk confirmed NOT journaled
+
+Sourced the actual IPSW the tutorial needs —
+`iPhone_5.5_12.1_16B92_16B92_Restore.ipsw` a.k.a.
+`iPhone_5.5_12.1_16B92_Restore.ipsw` (~3.27GB, confirmed reachable and
+range-request-capable straight from Apple's CDN at the URL the tutorial
+itself links). Rather than downloading all 3.27GB, wrote
+`tools/remote_zip_extract.py` (a minimal HTTP-range-backed file object
+for Python's `zipfile`, same idea as `phase3/ramdisk/tools/fetch_ramdisk.py`'s
+docstring but actually implemented here) to pull just `BuildManifest.plist`,
+then the `n66ap` / "Customer Erase Install" build identity's
+`RestoreRamDisk` (`048-32459-105.dmg` in this exact IPSW — filename
+differs slightly from the tutorial's own `048-32651-104.dmg`, that's
+normal, different IPSW build variant/day, same role, found via
+BuildManifest.plist like the tutorial's ramdisk always is), `KernelCache`,
+and `DeviceTree` — all under `emulator/work/` (gitignored, re-derivable
+any time via `tools/remote_zip_extract.py` + the exact commands below).
+
+Decoded with `xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py`
+(Linux-portable, confirmed): output is a genuine 106,771,456-byte
+HFS+ volume (`file` confirms it, volume name
+`PeaceB16B92.arm64CustomerRamDisk`). **`fsck.hfsplus -n` reports
+"Checking non-journaled HFS Plus Volume"** — so journaling is **not**
+the blocker for this exact ramdisk. Read-only browsed with `7z l` (no
+mount needed) and confirmed `/sbin/launchd` and the expected
+`System/Library/LaunchDaemons/*.plist` files are present, matching what
+the tutorial's patch steps expect.
+
+**Where it actually stops now: the RW mount itself needs `sudo`, and this
+box has no passwordless sudo** (same limitation noted elsewhere in this
+project). `sudo -n mount ...` correctly fails with "a password is
+required" rather than silently doing something wrong — this is a real
+permission wall, not a technical unknown anymore. The commands below are
+ready to run by hand (not by an agent) the moment someone's at the
+keyboard:
+
+```
+cd emulator/work
+sudo mount -t hfsplus -o rw,loop,uid=$(id -u),gid=$(id -g) 048-32459-105.dmg.out mnt
+# then the tutorial's rsync/chown/launchd-patch/jtool-sign steps, adapted
+# from /Volumes/PeaceB16B92.arm64UpdateRamDisk-style paths to ./mnt
+sudo umount mnt
+```
+
+Reproduce the extraction from scratch:
+```
+cd emulator/work
+python3 ../tools/remote_zip_extract.py "<IPSW URL from docs/upstream-build-tutorial.md>" BuildManifest.plist
+# then re-run the BuildManifest-parsing snippet in this README's history
+# (see git log for emulator/README.md) to get the exact n66ap ramdisk path
+# for whichever IPSW build you're on, then:
+python3 ../tools/remote_zip_extract.py "<IPSW URL>" <ramdisk-path> kernelcache.release.n66 Firmware/all_flash/DeviceTree.n66ap.im4p
+python3 ../xnu-qemu-arm64-tools/bootstrap_scripts/asn1rdskdecode.py <ramdisk-file> <ramdisk-file>.out
+fsck.hfsplus -n <ramdisk-file>.out   # confirm non-journaled before trusting RW mount
+```
+
 ## If this is picked up again
 
 1. ~~Try `sudo mount -t hfsplus -o rw,loop hfs.main /mnt/somewhere`~~ —
-   **done, confirmed working for non-journaled volumes, see above.**
-2. Download the target IPSW, run the tutorial's (Linux-portable) Python
-   kernel/device-tree/ramdisk decode steps to get the real
-   `048-32651-104.dmg.out`-style HFS+ image, and check whether it's
-   journaled (`fsck.hfsplus -n` will say). If journaled, RW mount may
-   still fail — that's the next real unknown, untested here.
-3. `jtool2`'s Linux build needs verifying for the two ad-hoc-signing steps
-   (`/bin/tunnel`, patched `launchd`).
-4. Everything from "clone xnu-qemu-arm64" and "configure/make" onward in
+   **done, confirmed working for non-journaled volumes.**
+2. ~~Check whether the real target ramdisk is journaled~~ — **done,
+   confirmed NOT journaled.** RW mount is expected to work; untested only
+   because it needs interactive sudo.
+3. Someone needs to actually run the `sudo mount` command above by hand,
+   then walk through the tutorial's rsync/launchd-patch/jtool-sign steps
+   against `./mnt` instead of a macOS `/Volumes/...` mountpoint.
+4. `jtool2`'s Linux build still needs verifying for the two ad-hoc-signing
+   steps (`/bin/tunnel`, patched `launchd`) — untouched by this update.
+5. Everything from "clone xnu-qemu-arm64" and "configure/make" onward in
    `docs/upstream-build-tutorial.md` is Linux-native and just needs
    `source ~/.bashrc.emulator-env` first for the dependency prefix.
+6. Not yet sourced: the second, much larger OS disk image (referred to as
+   `048-31952-103.dmg` in the tutorial, the "N56N66OS" volume used as the
+   rsync source) — needed for the actual file content that gets copied
+   into the ramdisk/secondary disk. Not fetched in this session; may
+   require checking `payload.encrypted` the way
+   `phase3/ramdisk/tools/fetch_ramdisk.py` does for the restore ramdisk,
+   since OS-partition dmgs are more often encrypted than restore ramdisks.

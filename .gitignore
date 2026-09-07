@@ -32,3 +32,7 @@ emulator/*.dmg
 emulator/*.dmg.out
 emulator/kernelcache*
 emulator/*.im4p*
+# emulator/work/: scratch dir for IPSW-derived artifacts (decoded ramdisk,
+# kernelcache, device tree, BuildManifest.plist) -- all re-derivable via
+# remote_zip_extract.py + xnu-qemu-arm64-tools, same reasoning as above.
+emulator/work/
