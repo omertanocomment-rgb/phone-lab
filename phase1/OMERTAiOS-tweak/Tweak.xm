@@ -11,25 +11,17 @@ static UIWindow *gOMLockWindow;
 
 - (void)applicationDidFinishLaunching:(id)application {
     %orig;
-    NSLog(@"[OMERTA] applicationDidFinishLaunching fired");
-    [UIApplication sharedApplication].idleTimerDisabled = YES;
-    NSLog(@"[OMERTA] idleTimerDisabled set to YES");
-    BOOL hasPin = [OMOwnerLock hasOwnerPin];
-    NSLog(@"[OMERTA] hasOwnerPin = %d", hasPin);
-    if (hasPin) {
-        NSLog(@"[OMERTA] creating lock window");
+    // Set NSLog(@"[OMERTA] ...") checkpoints back in here (and tail syslog
+    // with `idevicesyslog | grep -i omerta` from the host) if this needs
+    // debugging again on a device with no working screen -- that's how
+    // Phase 1's logic was confirmed working end-to-end even before it was
+    // ever seen rendered. See toolchain/03-odyssey-bootstrap-and-headless-debug.md.
+    if ([OMOwnerLock hasOwnerPin]) {
         gOMLockWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
         gOMLockWindow.windowLevel = CGFLOAT_MAX;
         gOMLockWindow.rootViewController = [[OMLockViewController alloc] init];
         [gOMLockWindow makeKeyAndVisible];
-        NSLog(@"[OMERTA] lock window made key and visible, frame=%@", NSStringFromCGRect(gOMLockWindow.frame));
     }
 }
 
 %end
-
-%ctor {
-    NSLog(@"[OMERTA] ctor firing, setting PIN");
-    [OMOwnerLock setOwnerPin:@"1234"];
-    NSLog(@"[OMERTA] ctor done");
-}
