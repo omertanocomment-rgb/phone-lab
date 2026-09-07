@@ -12,13 +12,9 @@ phase1/
 ├── OMERTAiOS-tweak/           # Objective-C/Theos tweak source (owner-lock overlay)
 └── toolchain/
     ├── 01-jailbreak-iphone6-checkra1n.md
-    └── 02-theos-bootstrap-mint.sh
+    ├── 02-theos-bootstrap-mint.sh
+    └── 03-odyssey-bootstrap-and-headless-debug.md
 ```
-
-Note: `toolchain/03-odyssey-bootstrap-and-headless-debug.md`, referenced by
-`OMERTA-iOS-PLAN.md`, wasn't present in the source directory at merge time —
-only `01-jailbreak-iphone6-checkra1n.md` and `02-theos-bootstrap-mint.sh`
-carried over. Add the missing doc here if it turns up elsewhere.
 
 ## What's in `OMERTAiOS-tweak/`
 
