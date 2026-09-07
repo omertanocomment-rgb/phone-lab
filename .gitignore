@@ -19,3 +19,16 @@ output/*
 **/.theos/
 
 .DS_Store
+
+# emulator/: the vendored xnu-qemu-arm64 QEMU fork (full upstream source
+# tree, ~113MB) is cloned fresh, not committed -- same reasoning as
+# phase2/pongo-src/ above. IPSW downloads, extracted kernelcache/device
+# tree/disk images, and the built qemu-system-aarch64 binary are all
+# local artifacts too.
+emulator/xnu-qemu-arm64/
+emulator/xnu-qemu-arm64-tools/
+emulator/*.ipsw
+emulator/*.dmg
+emulator/*.dmg.out
+emulator/kernelcache*
+emulator/*.im4p*
