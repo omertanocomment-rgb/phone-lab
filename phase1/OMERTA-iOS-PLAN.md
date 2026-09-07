@@ -98,6 +98,17 @@ resolved through one of those legitimate paths, or a second, verified
 non-locked iPhone 6/6s-class device to test on instead. Do not start Phase
 2 until that visual/interactive confirmation happens for real.
 
+**Independently re-confirmed 2026-09-07/08, separate session:** same unit,
+still Activation Locked (confirmed directly on-screen this time, not just
+inferred from the crash-loop) -- unchanged, no legitimate bypass attempted
+or suggested. Re-verified the same "confirmed working" claims from a fresh
+install: `libhooker: Loading for binary SpringBoard` /
+`Injecting /usr/lib/TweakInject/OMERTAiOS.dylib` in syslog confirms the
+tweak actually loads, and a fresh `%ctor`-set test PIN produced clean
+`securityd` delete+insert pairs for both `owner_salt` and `owner_hash`
+under `svce=com.omerta.iosui.ownerlock`, captured live via `idevicesyslog`
+during the respring. Same conclusion as before, now cross-checked twice.
+
 ## Roadmap (do NOT build ahead of testing -- same rule as the Android side)
 
 - **Phase 1 (built):** Owner-lock overlay on SpringBoard launch.
