@@ -56,7 +56,37 @@ re-verified with an actual DFU+rejailbreak cycle the way the genuinely novel
 phase2 USB/framebuffer-console findings were. Worth a real reboot test
 before leaning on this claim for anything security-sensitive.
 
-## `ramdisk/` — patched ramdisk via the phase2 Pongo module
+## `ramdisk/` — patched ramdisk via the phase2 Pongo module — **ABANDONED, DESTRUCTIVE, DO NOT RETRY**
+
+**2026-09-08 update: this approach was tried end-to-end on the real device
+and it erased it.** `modload`-ing the KPF module, pushing the patched
+ramdisk via `ramdisk`, then `kpf_flags 1` + `bootx` did **not** produce an
+isolated, RAM-only "custom recovery-style environment, without touching the
+installed iOS at all" the way this section originally (wrongly) assumed.
+The device went through the iOS Setup Assistant "Hello" screen, "Update
+Completed", and landed on the real Apple Activation Lock screen — an
+NVRAM `obliteration` key captured mid-process decoded to `"main:
+SafeObliteration Complete"` (Apple's own secure-erase marker). The test
+iPhone 6's jailbreak/tweak install and personal data are presumed wiped,
+and it's now re-locked to the previous owner's iCloud account. Full
+incident writeup lives in this project's session memory
+(`omerta-ios-critical-incident-2026-09-08`), not in this repo.
+
+**Best-understood root cause:** the specific ramdisk sourced here
+(`038-87170-068.dmg`, the `n61ap` **"Customer Erase Install"** build
+identity's `RestoreRamDisk`) is not a generic rescue/recovery image —
+Apple's own restore tooling uses this exact ramdisk class to erase and
+reinstall iOS. That is true of the ramdisk itself, independent of whatever
+patching was done to `restored_external` inside it. "Unencrypted and
+patchable" was never evidence of "safe to boot" — conflating those two was
+the mistake. **Do not push/boot a Customer Erase Install ramdisk against a
+real device again expecting it to be non-destructive.** If this avenue is
+ever revisited, it needs a different build-identity ramdisk (a genuine
+diagnostic/recovery variant, not Erase Install) and a replacement test
+device, with explicit new authorization.
+
+The rest of this section is kept as a historical record of what was
+verified before that live test, not as a plan to continue.
 
 Upstream's `scripts/boot-checkra1n.py` shows the pattern: `modload` a KPF
 module (this project already has one, built and verified —
@@ -64,7 +94,8 @@ module (this project already has one, built and verified —
 ramdisk image via the `ramdisk` shell command, set `kpf_flags 1`, then
 `bootx` with `rootdev=md0` so XNU boots from the pushed ramdisk instead of
 the real NAND rootfs — a "custom recovery-style environment, without
-touching the installed iOS at all," per `PLAN.md`'s own framing.
+touching the installed iOS at all," per `PLAN.md`'s own framing. **That
+framing turned out to be wrong — see above.**
 
 **Sourced and verified so far, real hardware / real Apple data, nothing
 invented:**
@@ -104,18 +135,17 @@ invented:**
    daemon, or eventually a custom status/control binary — rather than
    Apple's real restore handler.
 
-**Not done yet, deliberately, per an explicit scope decision this
-session:**
+**Since done, and how it concluded:**
 
-- Actually patching `restored_external` (or its plist) to launch
-  something custom.
-- **Repacking** the modified filesystem back into a valid raw HFS+
-  image pongoOS's `ramdisk` command will accept. HFS+ *write* support on
-  Linux is meaningfully less mature than read support (`7z` here was
-  read-only) — this is a real unknown, not a solved problem, and is the
-  next concrete blocker.
-- Testing the full chain live (`checkra1n -k` → `modload` KPF →
-  `ramdisk` → `bootx`) against the real phone.
+- `restored_external`/its plist was patched and the filesystem
+  successfully repacked into a raw HFS+ image (`output/RestoreRamDisk.patched.im4p`,
+  91,709,466 bytes) — the minimal replacement binary is
+  `ramdisk/omerta_ramdisk_init/` (prints a banner, sleeps; no restore
+  protocol, no filesystem writes).
+- The full chain (`checkra1n -k` → `modload` KPF → `ramdisk` → `bootx`)
+  was tested live against the real phone on 2026-09-08. **Result: it
+  erased the device instead of booting an isolated environment.** See the
+  abandonment notice above.
 
 **Not committed to git:** the ~92 MB ramdisk image itself (both wrapped
 and unwrapped forms) — same reasoning as `phase2/pongo-src/` not being
