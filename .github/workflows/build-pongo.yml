@@ -8,7 +8,7 @@ name: OMERTA iOS - build pongoOS + omerta_boot module
 #
 # Pinned to ubuntu-24.04 (not ubuntu-latest) and every flag/patch below
 # is copied from an actual successful build run on that exact image
-# (clang 18.1.3), not assumed from the upstream README alone. Three
+# (clang 18.1.3), not assumed from the upstream README alone. Four
 # real issues showed up building on a modern Ubuntu/clang that don't
 # show up on whatever older toolchain the pongoOS team builds with --
 # see the comments at each step. If GitHub ever moves ubuntu-24.04's
@@ -45,7 +45,16 @@ jobs:
           # libssl3). Pull it straight from the Focal security archive.
           curl -fsSL -o /tmp/libssl1.1.deb "http://security.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.24_amd64.deb"
           sudo dpkg -i /tmp/libssl1.1.deb
-          sudo apt-get install -y ld64 cctools-strip clang git xxd
+          sudo apt-get install -y ld64 cctools-strip clang llvm-18 git xxd
+          # Issue 4: pongoOS's newlib cross-build hardcodes AR=llvm-ar /
+          # RANLIB=llvm-ranlib (unversioned). Ubuntu's llvm-18 package
+          # only installs versioned binaries (llvm-ar-18, llvm-ranlib-18)
+          # and registers no update-alternatives entry to bridge them --
+          # confirmed empirically, not assumed. Symlink them ourselves.
+          sudo ln -sf "$(command -v llvm-ar-18)" /usr/local/bin/llvm-ar
+          sudo ln -sf "$(command -v llvm-ranlib-18)" /usr/local/bin/llvm-ranlib
+          llvm-ar --version
+          llvm-ranlib --version
 
       - name: Clone pongoOS
         run: |

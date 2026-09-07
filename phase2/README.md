@@ -32,7 +32,7 @@ Put these in `../output/`.
 
 ## Option B: build locally (Linux host, not Termux)
 
-**This exact sequence was actually run end-to-end (Ubuntu 24.04, clang 18.1.3) to produce real, verified `Pongo.bin` / `PongoConsolidated.bin` / `checkra1n-kpf-pongo` / `omerta_boot` binaries** — not copied from the upstream README and assumed to work. Three things needed fixing beyond the README's own instructions, because modern Ubuntu/clang is stricter than whatever the pongoOS team builds with; the CI workflow applies the same three fixes:
+**This sequence was run end-to-end locally (Ubuntu 24.04, clang 18.1.3) and produced real `Pongo.bin` / `PongoConsolidated.bin` / `checkra1n-kpf-pongo` / `omerta_boot` binaries** — not copied from the upstream README and assumed to work. A first attempt at wiring the same steps into GitHub Actions CI surfaced one more issue this local run's specific machine state didn't hit (a stale `llvm-ar` already on `PATH` from something installed earlier) — folded in below as issue 4, so this list is now more complete than the original local run was. Four things need fixing beyond the README's own instructions, because modern Ubuntu/clang is stricter than whatever the pongoOS team builds with; the CI workflow applies the same four fixes:
 
 ```bash
 # 1. ld64's Debian package depends on libssl1.1, which Ubuntu 24.04
@@ -43,7 +43,15 @@ sudo dpkg -i /tmp/libssl1.1.deb
 echo 'deb https://assets.checkra.in/debian /' | sudo tee /etc/apt/sources.list.d/checkra1n.list
 curl -fsSL https://assets.checkra.in/debian/archive.key | sudo apt-key add -
 sudo apt-get update
-sudo apt-get install -y ld64 cctools-strip clang git xxd   # xxd is needed by the Makefile's own PongoConsolidated.bin step
+sudo apt-get install -y ld64 cctools-strip clang llvm-18 git xxd   # xxd is needed by the Makefile's own PongoConsolidated.bin step
+
+# 4. pongoOS's newlib cross-build hardcodes AR=llvm-ar / RANLIB=llvm-ranlib
+#    (unversioned). Ubuntu's llvm-18 package only installs versioned
+#    binaries (llvm-ar-18, llvm-ranlib-18) and registers no
+#    update-alternatives entry to bridge them -- confirmed empirically
+#    against a real apt system, not assumed. Symlink them yourself:
+sudo ln -sf "$(command -v llvm-ar-18)" /usr/local/bin/llvm-ar
+sudo ln -sf "$(command -v llvm-ranlib-18)" /usr/local/bin/llvm-ranlib
 
 git clone --recurse-submodules https://github.com/checkra1n/PongoOS.git phase2/pongo-src
 cd phase2/pongo-src
