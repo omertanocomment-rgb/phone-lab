@@ -30,14 +30,16 @@ pongoOS is a **pre-boot execution environment**, not a replacement iOS. checkra1
 
 Steps (see `phase2/README.md` for exact commands):
 
-1. Confirm hardware: iPhone 6 = A8 = platform `s8000` (checkm8-vulnerable, in-scope for checkra1n/pongoOS).
-2. Verify DFU communication — `tools/dfu/detect.sh` (uses `irecovery`/`ideviceinfo`, which your `ios-tooling-builder` work already produced for 32-bit Android/Termux).
-3. Build upstream pongoOS (`phase2/pongo-src/` submodule, pulled at build time) via the CI workflow — produces `Pongo.bin` and `PongoConsolidated.bin`.
-4. Build the OMERTA Pongo module (`phase2/modules/omerta_boot/`) — a loadable module using pongoOS's real module ABI (`module_entry()`, `command_register()`, `preboot_hook`), not invented.
-5. Test booting Pongo standalone via `checkra1n -k Pongo.bin` — confirms DFU/checkm8/Pongo chain works before touching anything else.
-6. Load the OMERTA module over USB (`phase2/tools/omerta_load.py`) and run the `omerta` shell command — this is the "OMERTA boot/status screen," text/serial-console for this phase.
-7. Wire the module's `preboot_hook` so the OMERTA banner prints automatically on every boot, then falls through to normal `bootx`.
-8. Only after 1–7 are solid: investigate persistent OMERTA state (something the Pongo module can read/write, e.g. an NVRAM-ish flag) — still phase2, but the last, riskiest item.
+1. ✅ Confirm hardware: iPhone 6 = A8 = platform `s8000` (checkm8-vulnerable, in-scope for checkra1n/pongoOS). Confirmed via `ideviceinfo` (`ProductType: iPhone7,2`, `HardwareModel: N61AP`) and independently via 3uTools.
+2. ✅ Verify DFU communication — `tools/dfu/detect.sh` (uses `irecovery`/`ideviceinfo`).
+3. ✅ Build upstream pongoOS via the CI workflow — produces `Pongo.bin` and `PongoConsolidated.bin`. Real GitHub Actions run, artifact downloaded and verified (`file` confirms genuine Mach-O/bare-metal arm64 binaries).
+4. ✅ Build the OMERTA Pongo module (`phase2/modules/omerta_boot/`) — real module ABI (`module_entry()`, `command_register()`, `preboot_hook`).
+5. ✅ Test booting Pongo standalone via `checkra1n -k Pongo.bin` — confirmed repeatedly on real hardware (`05ac:4141` USB enumeration every time).
+6. ✅ Load the OMERTA module over USB and run the `omerta` shell command. **Visually confirmed on the phone's own screen** — pongoOS's console writes to the live framebuffer (`screen_putc()` in `fb.c`, reading `gBootArgs->Video`), not just USB, so the banner rendered directly on-device.
+7. ✅ Wire the module's `preboot_hook` so the OMERTA banner prints automatically on every boot, then falls through to normal `bootx`. Confirmed: running `bootx` re-printed the banner via the hook chain and the boot continued through to iOS (device reachable again afterward via `ideviceinfo`).
+8. Only after 1–7 are solid: investigate persistent OMERTA state (something the Pongo module can read/write, e.g. an NVRAM-ish flag) — still phase2, but the last, riskiest item. **Not started** — the only remaining open phase2 item.
+
+All of 1–7 confirmed on a real iPhone 6 the night of 2026-09-07/08. See `phase2/README.md`'s "Known issues" section for one still-open side issue (USB-based stdout reading doesn't work — turned out not to matter, since the framebuffer console above is the real confirmation channel).
 
 ## Phase 3 — Persistent userspace/OS work (not started, scoped only)
 
