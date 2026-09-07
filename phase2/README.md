@@ -105,7 +105,7 @@ This is an x86_64/arm64 Linux (or macOS) host thing, not a Termux/on-device thin
    ```
    pongoOS> omerta
    ```
-   You should see the OMERTA boot status banner (device type, boot_args revision, tick count).
+   You should see the OMERTA boot status banner (device type, boot_args revision, tick count). **See "Known issues" below** — reading the shell's text response back over the USB control-transfer protocol (as opposed to a real UART/serial connection) did not work in real-hardware testing, even using upstream's own unmodified reference scripts.
 5. To also test the auto-print-on-boot path, once the module is loaded run `bootx` — the module's `preboot_hook` chain prints the banner once, then hands off to whatever was already hooked (KPF etc.) before continuing to XNU.
 
 ## The module ABI, briefly
@@ -117,3 +117,13 @@ This is an x86_64/arm64 Linux (or macOS) host thing, not a Termux/on-device thin
 - No framebuffer/graphical splash — pongoOS has an `fb.c` driver upstream, but wiring a graphical OMERTA logo through it is real additional work, scoped as a phase3 candidate, not pretended to exist here.
 - No persistence — every boot means re-running DFU → checkra1n → module push. This is inherent to checkm8-class tethered tooling (`checkra1n` itself has the exact same property), not a shortcut we're missing.
 - No custom kernel/ramdisk yet — upstream's `scripts/boot-checkra1n.py` shows the pattern for pushing a ramdisk after Pongo (`modload` then `ramdisk` then `bootx`), which is the natural next phase2 step if you want OMERTA to influence what XNU actually boots into, not just what prints before it.
+
+## Known issues (from real hardware testing)
+
+**checkm8 exploit, Pongo boot, and `omerta_boot` module load are all confirmed working end-to-end on a real iPhone 6** — repeated, reliable `05ac:4141` pongoOS USB enumeration after `checkra1n -k`, and `omerta_load.py` reports a clean push every time with no error from the device.
+
+**Reading the shell's text output back over USB does not currently work in this setup.** The write direction (`ctrl_transfer(0x21, 3, 0, 0, "<cmd>\n")` — injecting a command into stdin) works fine and the device stays alive. But reading stdout back (`ctrl_transfer(0xa1, 1, 0, 0, 512)` — the same request `example`/`src/shell/usbloader.c`'s `ep0_device_request()` and upstream's own `scripts/fetch_stdout.py` use) reliably times out (`USBTimeoutError: [Errno 110] Operation timed out`) on a Linux host with `pyusb`/`libusb1`, using upstream's *unmodified* reference script — not something specific to this project's own tooling. In earlier attempts, repeatedly polling this same request in a tight loop crashed the device outright (USB disconnect, phone resets to Recovery Mode); a single one-shot read (matching how upstream's scripts are meant to be run — as separate one-off invocations, not a polling loop) times out cleanly without crashing the device.
+
+Not yet root-caused. Candidates worth checking before spending more device cycles on it: a real UART/serial connection instead of this USB control-transfer protocol (this project has no serial cable/adapter set up yet); a `libusb`/kernel version mismatch between what this host runs and whatever pongoOS's own developers test against; or a genuine short-packet-handling bug in pongoOS's minimal EP0 stack that only surfaces with certain USB controllers/drivers. `usbmon`/Wireshark packet capture during a read attempt is the logical next debugging step, not attempted yet.
+
+**Practical implication:** the `omerta` command and the `preboot_hook` banner-on-`bootx` path are both believed to work (the module loads, registers the command, and hooks correctly per its own source), but this has not been *visually or textually confirmed* on this hardware — only confirmed via the absence of any load-time error and successful re-enumeration.
