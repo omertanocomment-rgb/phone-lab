@@ -11,4 +11,10 @@ phase2/modules/*/build/
 output/*
 !output/.gitkeep
 
+# Theos build cache/scratch -- never source, and can transiently contain
+# whatever debug/test build (e.g. a temporary PIN-setting ctor) was last
+# built locally. The packaged .deb under packages/ is the intentional,
+# reviewed artifact; this directory never is.
+**/.theos/
+
 .DS_Store
