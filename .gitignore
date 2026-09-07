@@ -36,3 +36,12 @@ emulator/*.im4p*
 # kernelcache, device tree, BuildManifest.plist) -- all re-derivable via
 # remote_zip_extract.py + xnu-qemu-arm64-tools, same reasoning as above.
 emulator/work/
+
+# phase3/kernel/: vendored upstream clones (a pongoOS fork with Linux-load
+# support, ~131MB, and a full Linux kernel tree, ~2.2GB) -- cloned fresh
+# per phase3/kernel/README.md, not vendored, same reasoning as
+# phase2/pongo-src/ and emulator/xnu-qemu-arm64/ above. Build outputs
+# (Pongo.bin, Image.lzma, dtbs, .config) are also local/reproducible.
+phase3/kernel/pongo-linux-src/
+phase3/kernel/linux-apple/
+phase3/rootfs/pmbootstrap-work/
