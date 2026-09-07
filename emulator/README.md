@@ -88,18 +88,39 @@ does have a documented Linux build per newosxbook.com, not verified here).
 That's a real, separate side-investigation, not a quick unblock — stopping
 here rather than open-ending into it, per this task's own scope.
 
+## Update 2026-09-08: step 1 below is confirmed working
+
+Verified directly on this box, no IPSW needed for the test: `mkfs.hfsplus`
+(already installed, `/usr/sbin/mkfs.hfsplus`) made a small **non-journaled**
+test volume as a normal user; `sudo mount -t hfsplus -o
+rw,loop,uid=$(id -u),gid=$(id -g) test.hfs mnt/` mounted it read-write
+(the `uid=`/`gid=` options are needed or the mounted root defaults to
+root-owned); a file written through the mount was confirmed to actually
+persist to the underlying image (`fsck.hfsplus -n` reported the volume
+clean afterward, and the written bytes are present via `strings` directly
+on the image file, not just page-cache). So the Linux `hfsplus` driver's
+RW mount is real and sufficient **for a non-journaled volume** — the
+open question is now specifically whether the real ramdisk from the
+target IPSW is journaled or not (restore ramdisks are typically not, but
+unverified for this exact device/build).
+
+Command sequence that worked (adapt paths for the real decoded ramdisk):
+
+```
+sudo mount -t hfsplus -o rw,loop,uid=$(id -u),gid=$(id -g) <image> <mountpoint>
+# ... cp/rsync/patch as the tutorial's hdiutil-mounted steps describe ...
+sudo umount <mountpoint>
+```
+
 ## If this is picked up again
 
-1. Try `sudo mount -t hfsplus -o rw,loop hfs.main /mnt/somewhere` against a
-   `048-32651-104.dmg.out`-style decoded ramdisk on this box directly — if
-   the kernel driver's RW support is sufficient, most of the tutorial's
-   `hdiutil` steps translate directly (`cp -a`/`rsync`/`chown` on a normal
-   mountpoint instead of a `/Volumes/...` one).
-2. If that fails (journaled-volume RW is a common real limitation of the
-   Linux hfsplus driver), evaluate `libhfsp` or a full macOS/VM step just
-   for this one offline disk-prep stage (doesn't need to be the same
-   machine that runs QEMU afterward — the prepared `.dmg`/`hfs.main`/
-   `hfs.sec` files could be produced elsewhere and copied in).
+1. ~~Try `sudo mount -t hfsplus -o rw,loop hfs.main /mnt/somewhere`~~ —
+   **done, confirmed working for non-journaled volumes, see above.**
+2. Download the target IPSW, run the tutorial's (Linux-portable) Python
+   kernel/device-tree/ramdisk decode steps to get the real
+   `048-32651-104.dmg.out`-style HFS+ image, and check whether it's
+   journaled (`fsck.hfsplus -n` will say). If journaled, RW mount may
+   still fail — that's the next real unknown, untested here.
 3. `jtool2`'s Linux build needs verifying for the two ad-hoc-signing steps
    (`/bin/tunnel`, patched `launchd`).
 4. Everything from "clone xnu-qemu-arm64" and "configure/make" onward in
