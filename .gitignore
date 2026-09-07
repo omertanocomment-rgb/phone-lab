@@ -5,6 +5,7 @@ phase2/pongo-src/
 phase2/build/
 phase2/modules/*/build/
 *.o
+*.Td
 *.bin.tmp
 
 # downloaded CI artifacts land here locally; keep the dir, not the contents

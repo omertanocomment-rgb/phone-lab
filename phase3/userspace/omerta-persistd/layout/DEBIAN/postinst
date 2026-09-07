@@ -1,0 +1,9 @@
+#!/bin/bash
+# Ensure launchd will actually accept the LaunchDaemon plist (it refuses
+# group/world-writable files) and load it immediately, so the daemon is
+# live right after install without needing a reboot to prove it works.
+chmod 644 /Library/LaunchDaemons/com.omerta.iosui.daemon.plist
+chown root:wheel /Library/LaunchDaemons/com.omerta.iosui.daemon.plist
+launchctl unload /Library/LaunchDaemons/com.omerta.iosui.daemon.plist 2>/dev/null
+launchctl load /Library/LaunchDaemons/com.omerta.iosui.daemon.plist
+exit 0
