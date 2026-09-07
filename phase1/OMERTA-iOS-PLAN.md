@@ -54,14 +54,49 @@ the owner-lock overlay:
   owner PIN is set, throws up a max-window-level `UIWindow` blocking
   interaction with the real home screen until the PIN is entered correctly.
 - `control` / `Makefile` -- standard Theos package metadata and build rules,
-  targeting `arm64`, `iphoneos-arm64`, minimum iOS 12.0.
+  targeting `arm64` (compiled CPU arch), packaged under the
+  `iphoneos-arm` dpkg architecture tag (not Theos's default
+  `iphoneos-arm64` -- see below), minimum iOS 12.0.
 
-This is unverified against a real device/SDK (there's no Xcode or iOS SDK
-in the environment this was written in) -- syntax was hand-checked for
-balanced braces/parens, but the actual compile-and-run test only happens on
-your Linux Mint box once Theos + the SDK are installed. Treat this the same
-way we treated build-termux.sh and build-kali.sh: first real build is the
-real test.
+## Current status (updated after real-device testing)
+
+This has now gone through a full live debugging session on real hardware
+(checkra1n iPhone 6, iOS 12.5.8) -- built with Theos, packaged, and
+installed via dpkg with all dependencies (including `mobilesubstrate`, via
+CoolStar's LibHooker) correctly resolved. Everything encountered along the
+way -- getting dpkg/apt/Sileo onto the device with zero touchscreen
+interaction, a dpkg `MaxLoopCount` cycle bug, an apt segfault, and an
+architecture-tag mismatch between Theos's default output and this
+bootstrap's dpkg convention -- is written up in
+`toolchain/03-odyssey-bootstrap-and-headless-debug.md`.
+
+**What's confirmed working:** the `.deb` installs cleanly (`ii` status, no
+dependency errors), the tweak's hook fires on SpringBoard launch, and its
+Keychain-backed PIN storage (`OwnerLock.m`) genuinely writes to the
+Keychain -- confirmed independently via `securityd`'s own syslog output
+(`inserted <genp...svce=com.omerta.iosui.ownerlock...acct=owner_hash...>`),
+captured live over SSH with `idevicesyslog`.
+
+**What's not yet confirmed:** actually seeing the lock overlay rendered on
+screen. The specific test unit used this session turned out to be iCloud
+Activation Locked from a previous owner (discovered via 3uTools' Batch
+Activate/Erase screen) -- this blocks Apple's own Setup Assistant from ever
+completing and appears to also cause an intermittent SpringBoard
+crash-loop, unrelated to this tweak's own code (confirmed by removing the
+tweak entirely and observing the same crash behavior persisted). This is a
+property of that one secondhand unit, not a defect in this project, and it
+is **not something to work around** -- Activation Lock is an anti-theft
+mechanism and there is no legitimate software bypass; see the toolchain doc
+for the legitimate paths (original account holder, Apple Support + proof of
+purchase, or an MDM bypass code for enterprise-owned devices).
+
+**Net effect:** Phase 1's code is validated as correct through every layer
+that can be checked without a working, unlocked display. The remaining
+step -- watching the actual overlay render and testing the PIN-entry flow
+end-to-end -- needs either this same phone with its Activation Lock
+resolved through one of those legitimate paths, or a second, verified
+non-locked iPhone 6/6s-class device to test on instead. Do not start Phase
+2 until that visual/interactive confirmation happens for real.
 
 ## Roadmap (do NOT build ahead of testing -- same rule as the Android side)
 
