@@ -312,24 +312,63 @@ specific panic location — the device-tree/kernel-source evidence above
 is more concrete and specific to this exact build than what that post is
 likely to add, so re-fetching it wasn't judged worth the time this round.
 
+## Update 2026-09-08 (5): earlycon attempt gave no new signal — likely pre-console failure
+
+With the user present, re-ran the exact same live test with
+`-c "earlycon=s5l,mmio32,0x20a0c0000 console=ttySAC0"` added. **Identical
+observable outcome to the first attempt**: screen went black, the
+pongoOS USB session disconnected and didn't re-enumerate as anything for
+several seconds, then the phone came back up at Setup Assistant — same
+already-known erased state, confirmed by USB re-enumerating as normal
+`05ac:12a8` iPhone mode again, no new damage.
+
+**This result is genuinely ambiguous, not a confirmed dead end**, because
+there's no way to physically observe the UART-based `earlycon` output
+from this host — it goes to a physical pin, not the screen or over USB.
+So we cannot distinguish between "earlycon printed something useful but
+we have no way to see it" and "the crash happens before earlycon's own
+init code ever runs." The identical black-screen/USB-disconnect pattern
+in both attempts is circumstantial evidence for the latter (if the kernel
+had gotten meaningfully further with a working console, some visible
+side effect — even just surviving a bit longer before the USB drop —
+might be expected, though this isn't proof) — consistent with the
+pre-console MMU/early-boot-assembly failure class flagged as the next
+real lead in Update (4).
+
+**Where this leaves phase3/kernel: two live-hardware attempts, same
+result, no new hardware-observable data from the second one.** Further
+progress from here needs one of:
+- **Physical UART access** — soldering/probing an actual hardware debug
+  point on the phone to capture real earlycon bytes. This is a real
+  hardware-modification undertaking with its own risk to the device, not
+  a software step, and wasn't attempted or scoped further this session.
+- **Deep kernel source-level investigation** of the A7/A8 MMU/early-boot
+  path (comparing this fork's boot assembly against whatever fix the
+  Hackaday-covered A7/A8/A8X bring-up breakthrough actually changed) —
+  genuinely open-ended, matches `PLAN.md`'s own "multi-month research
+  project" framing for this whole tier, not a quick next step.
+
+Given two consecutive identical live-device outcomes, further live DFU
+cycles right now don't have new diagnostic leverage without one of the
+above first. Recommend pausing live-hardware iteration here and treating
+any further work as offline kernel/source research, resuming live testing
+only once a concrete new hypothesis (from either avenue above) exists to
+test.
+
 ## If this is picked up again
 
 1. ~~Resume the kernel build~~ / ~~get phase3/rootfs/ past its sudo
    blocker~~ — **all done, see above and phase3/rootfs/README.md.**
-2. ~~Live device test~~ — **attempted, kernel doesn't reach visible
-   boot output, see above.**
-3. ~~Diagnose why there's no console output~~ — **root-caused: no
-   framebuffer node in this device's DT at all, but a real earlycon path
-   exists via the enabled `serial0` UART. Confident cmdline identified,
-   no rebuild needed — see Update (4) above.** Next: run the live test
-   again with `-c "earlycon=s5l,mmio32,0x20a0c0000 console=ttySAC0"`,
-   with the user present, same as every other real-device step.
-4. If earlycon output still shows nothing at all, the next real lead is
-   the MMU/early-boot-assembly path this kernel fork's own upstream
-   history flagged as its hardest bring-up problem for this chip family
-   — that's a much deeper investigation (comparing this exact kernel's
-   boot assembly against whatever the Hackaday-covered fix actually
-   changed), not a quick follow-up.
-5. If earlycon output appears and shows a panic, that panic's own
-   backtrace becomes the next concrete thing to chase — a real
-   diagnostic target instead of guessing blind.
+2. ~~Live device test~~ / ~~earlycon retest~~ — **both attempted, both
+   ended in the same black-screen/USB-disconnect/reset-to-Setup-Assistant
+   pattern, no new hardware-observable data from the earlycon addition
+   alone. Not proof of a pre-console failure, but the best-supported
+   explanation. See Update (5) above.**
+3. Two real paths forward, neither a quick follow-up: physical UART
+   hardware access (real device-modification risk, out of scope without
+   explicit new authorization), or deep source-level comparison of this
+   kernel fork's A7/A8 early-boot/MMU-enable assembly against the known
+   Hackaday-covered fix for other devices in this chip family.
+4. Don't repeat the live-device test again without a concrete new
+   hypothesis from #3 to test — two identical results in a row means
+   another identical attempt is unlikely to teach us anything new.
