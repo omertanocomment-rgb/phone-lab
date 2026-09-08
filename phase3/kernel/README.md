@@ -180,13 +180,68 @@ a slow build on 2 jobs / modest hardware, exactly as flagged before.
   <initramfs>`, run against a live pongoOS session the same way
   `phase2/tools/omerta_load.py` already is.
 
+## Update 2026-09-08 (3): live device test attempted — kernel doesn't boot cleanly yet
+
+`phase3/rootfs/` finished (see that README — `install`/`initfs`/`export`
+all completed, real initramfs/rootfs/vmlinuz produced). With the user
+present and DFU/`checkra1n` handled directly by them (this project's
+standing rule for any real-device step): booted this directory's own
+`pongo-linux-src` `Pongo.bin` (confirmed live pongoOS session, `05ac:4141`
+in `lsusb`), then ran
+
+```
+python3 scripts/load_linux.py \
+  -k linux-apple/arch/arm64/boot/Image.lzma \
+  -d linux-apple/dtbpack \
+  -r <pmbootstrap's exported initramfs>
+```
+
+**Result: the phone's screen went black, then the pongoOS USB session
+disconnected and never re-enumerated as anything (no netboot USB-network
+interface appeared either). The phone came back up at iOS's Setup
+Assistant / Activation Lock screen** — `ideviceinfo` confirmed this is
+**the same already-erased state from the `phase3/ramdisk/` incident**
+(identical `BuildVersion: 16H88`, `ActivationState: Unactivated`,
+`BrickState: true`, same UDID) — not a new or worse state. No new NAND
+writes are believed to have occurred.
+
+**Best-understood explanation:** the Linux kernel likely panicked or
+hung very early (before/during display init), which triggered a hardware
+reset; on any hard reset the device falls back to iBoot's normal boot
+chain, and since the real NAND-stored iOS was already left erased and
+Setup-Assistant-pending from the earlier incident, that's what
+resurfaced — not a new erase, the same one surfacing again after a
+reset. This matches the ivonblog.com reference author's own reported
+experience on this exact device generation ("hit a kernel panic",
+"almost every hardware feature has an X" in the compatibility table) —
+we did not get further than they did, and possibly hit the same
+underlying issue.
+
+**Not diagnosed further this session:** no serial/earlycon console was
+attached, and phase2's own established "framebuffer, not USB, is the
+real console" pattern wasn't confirmed working for this Linux kernel
+build specifically (it may need `earlycon`/framebuffer driver
+verification, or the display handoff from pongoOS's own console may not
+match what this kernel's simple-framebuffer driver expects). This is a
+real, unresolved technical gap, not something worked around.
+
 ## If this is picked up again
 
-1. ~~Resume the kernel build~~ — **done, `Image.lzma` + `dtbpack` both
-   exist and verified.**
-2. Get `phase3/rootfs/` past its sudo blocker (see that README) to
-   produce an initramfs + exported rootfs for netboot.
-3. Only then, with the user present: enter DFU, boot the
-   `pongo-linux-src` build's `Pongo.bin` via `checkra1n`, and run
-   `load_linux.py`. Confirm boot log output over the framebuffer/serial
-   console before attempting netboot's full rootfs handoff.
+1. ~~Resume the kernel build~~ / ~~get phase3/rootfs/ past its sudo
+   blocker~~ — **all done, see above and phase3/rootfs/README.md.**
+2. ~~Live device test~~ — **attempted, kernel doesn't reach visible
+   boot output, see above.** Before repeating this exact test, consider:
+   - Adding `earlycon` to the kernel cmdline (`load_linux.py -c`) to get
+     any console output earlier in boot, before framebuffer/display
+     drivers would normally init.
+   - Checking whether `CONFIG_FB_SIMPLE`/the actual apple-specific
+     display driver is enabled in `example.config` and whether pongoOS's
+     own console hand-off address matches what this specific kernel
+     build expects.
+   - Trying a much smaller/`console`-only kernel config (trim
+     selinux/netfilter/wifi/most drivers per the earlier note) to rule
+     out an unrelated init-time crash in a driver we don't even need.
+   - Re-reading `ivonblog.com`'s post for exactly where in the boot
+     sequence their kernel panic happened, if that detail exists there.
+3. Each live-device attempt should be done with the user present, same
+   as this one — no change to that rule.
