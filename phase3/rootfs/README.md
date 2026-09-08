@@ -99,6 +99,32 @@ management to build the rootfs locally, nothing to do with the real
 iPhone. But the fix is the same either way: a human needs to type the
 password.
 
+## Update 2026-09-08 (2): install/initfs/export all completed — DONE
+
+With the user present to type the `sudo` password, the full chain
+finished cleanly: `install` (4/4 stages: prepare native chroot, create
+device rootfs, prepare install blockdevice, fill install blockdevice),
+`initfs hook_add netboot`, `export`. One transient self-recovered issue
+along the way — `chroot not initialized! This is a bug! Please report
+it.` during the netboot hook install, which `pmbootstrap` handled itself
+("initializing the chroot for you...") and continued; not a real failure.
+
+**Verified real output** (symlinks in `/tmp/postmarketOS-export/`,
+resolved and checked directly, not assumed from the log):
+- `apple-idevice.img` → `~/.local/var/pmbootstrap/chroot_native/home/pmos/rootfs/apple-idevice.img`, 1,258,291,200 bytes (1.2GB rootfs+boot image)
+- `initramfs` → `~/.local/var/pmbootstrap/chroot_rootfs_apple-idevice/boot/initramfs`, 12,552,693 bytes
+- `vmlinuz` → `~/.local/var/pmbootstrap/chroot_rootfs_apple-idevice/boot/vmlinuz`, 9,455,528 bytes (postmarketOS's own prebuilt kernel package — **not** the project's own `../kernel/linux-apple` build; for the actual live test, use our own `Image.lzma`/`dtbpack` via `load_linux.py`, and only this `initramfs` from this export, per the boot-mechanism-agnostic reasoning above)
+
+Host stayed healthy throughout: memory never dropped below the
+200-something MB-free band seen in earlier steps, disk at 34GB free
+afterward.
+
+**Everything phase3/kernel/ and phase3/rootfs/ set out to build now
+exists.** The only remaining step for this whole phase3 "kernel/rootfs"
+milestone is the live device test — see `../kernel/README.md`'s final
+section for the exact command, now fully unblocked (kernel, dtbpack, and
+initramfs all real and present).
+
 ## If this is picked up again
 
 1. With the user present, run (from
