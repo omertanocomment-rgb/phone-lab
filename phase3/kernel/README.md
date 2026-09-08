@@ -372,3 +372,117 @@ test.
 4. Don't repeat the live-device test again without a concrete new
    hypothesis from #3 to test — two identical results in a row means
    another identical attempt is unlikely to teach us anything new.
+
+## Update 2026-09-08 (6): found and patched a real x0/FDT handoff bug — untested on hardware
+
+**Correction to earlier documentation:** `src/drivers/plat/s8000.c` is
+**not** the iPhone 6's platform driver — its own source names it
+`"Apple A9 (S8000, Samsung)"` (the iPhone 6s' chip, not the iPhone 6's).
+The actual matching driver for our device is `src/drivers/plat/t7000.c`
+(`device->cpid == 0x7000`), confirmed alongside the device tree's own
+`compatible = "apple,t7000"`. An earlier update in this file misattributed
+`s8000.c` to this project's device; this doesn't change any conclusion
+already reached, just corrects the record.
+
+**Investigated whether `fix_a7()` (applied to our device via
+`apply_tunables()`'s `case 0x7000: case 0x7001: fix_a7(); break;`) is a
+tunable mismatch** — it isn't. Its own code comment reads "Cyclone /
+typhoon specific init thing": Cyclone is A7's microarchitecture, Typhoon
+is A8's, so this function intentionally covers both chip generations
+under one name. Ruled out as a cause.
+
+**Found the actual bug, by tracing the real jump-into-Linux path end to
+end:**
+
+`pongo_entry()` (`src/kernel/entry.c`) branches on `gBootFlag`, and for
+`BOOT_FLAG_LINUX` previously fell through to one shared final call used
+by *every* boot path:
+```c
+exit_to_el1_image((void*)gBootArgs, gEntryPoint);
+```
+`gBootArgs` is XNU's `boot_args` structure. `exit_to_el1_image` →
+`stage3_exit_to_el1_image` → `jump_to_image(entry, args)`
+(`src/boot/jump_to_image.S`) does `mov x0, x1` — i.e. whatever's passed
+as `args` becomes x0 at the final jump, unconditionally, for both the
+Linux and XNU paths.
+
+**The ARM64 Linux boot protocol requires x0 to be the physical address of
+the device tree blob** (FDT magic `0xd00dfeed`), not an XNU `boot_args`
+struct. `linux_prep_boot()` (`src/modules/linux/linux.c`) already builds
+exactly the right FDT in `gLinuxFDT` — complete with the injected
+`simple-framebuffer` node (see Update 4's correction below), initrd
+pointers, and our `-c` cmdline/earlycon spec — but **that pointer was
+never passed to Linux at all**. Linux was being jumped into with x0
+pointing at an XNU structure it has no way to interpret as a device tree.
+This one bug would fully and simply explain **every** symptom observed
+across both live tests: a crash before any code (console, earlycon, or
+otherwise) could run, identical between the plain and earlycon attempts
+(the earlycon spec lives *inside* the unreachable `gLinuxFDT`'s
+`bootargs` property — the kernel never got a chance to read it either).
+
+**Correction to Update (4)'s framebuffer conclusion, found while tracing
+this:** `linux_dtree_overlay()` in the same file *does* inject a real
+`simple-framebuffer` node at boot time, using pongoOS's own live,
+visually-confirmed-working framebuffer address/format — Update (4)'s
+"no framebuffer node anywhere" claim was only true of the static `.dts`
+files, not this runtime injection. Verified the injected `format` string
+(`"a8b8g8r8"`) is a real, recognized `SIMPLEFB_FORMATS` entry in
+`linux-apple`, and `CONFIG_FB_SIMPLE=y`/`CONFIG_FRAMEBUFFER_CONSOLE=y`
+are both already set — so if the kernel had gotten past early boot, a
+working on-screen console was actually plausible. This doesn't change
+the live-test outcome (nothing appeared either way), but it does mean the
+x0/FDT bug above, not a missing framebuffer, is the best-supported
+explanation for the total silence.
+
+**Fix applied** (`src/kernel/entry.c`, `pongo-linux-src`), rebuilt
+successfully (`make all`, no errors, `build/Pongo.bin` regenerated,
+676,192 bytes, 2026-09-08 08:52):
+```c
+else if(gBootFlag == BOOT_FLAG_LINUX)
+{
+    linux_boot();
+    // physical address of gLinuxFDT (same cacheable-view rebase as
+    // gLinuxStage already gets a few lines up), not gBootArgs
+    extern void *gLinuxFDT;
+    exit_to_el1_image((void*)(((uint64_t)gLinuxFDT) - kCacheableView + 0x800000000), gEntryPoint);
+}
+else
+{
+    tz_lockdown();
+    xnu_boot();
+    exit_to_el1_image((void*)gBootArgs, gEntryPoint);
+}
+```
+(The old unconditional `exit_to_el1_image((void*)gBootArgs, gEntryPoint);`
+after the if/else chain was removed — each branch now calls it with the
+correct argument for what it's actually booting.)
+
+**Not tested on real hardware this pass** — per this project's standing
+rule, live-device steps happen with the user present, and this task was
+scoped to offline research/patching only. This is a well-reasoned,
+concretely-sourced fix (not a guess), but it is unverified until run
+against the real phone. If it's right, the very next live test should
+show either genuine kernel boot log text (framebuffer console or
+earlycon UART) or at minimum a different failure signature than the
+identical black-screen/USB-disconnect pattern seen twice before — either
+outcome would be new information. If the phone still shows the exact
+same silent failure a third time, this hypothesis would be substantially
+weakened and the next lead would need to go back to the MMU/early-boot
+assembly path proper.
+
+## If this is picked up again (supersedes the equivalent list after Update 5)
+
+1. With the user present: repeat the live-device test using the
+   **rebuilt** `pongo-linux-src/build/Pongo.bin` (same DFU → `checkra1n -c
+   -k .../pongo-linux-src/build/Pongo.bin -E` → `load_linux.py` sequence
+   as before, same kernel/dtbpack/initramfs/cmdline arguments). This is a
+   genuine new hypothesis to test, not a repeat of the prior identical
+   attempts.
+2. If boot output appears: real progress, follow whatever it shows next.
+3. If the exact same silent black-screen/USB-disconnect happens again:
+   the x0/FDT fix, while well-reasoned, wasn't sufficient alone — return
+   to the MMU/early-boot-assembly and physical-UART-access leads from
+   Update (5), and also double check the `gLinuxFDT` rebase math above
+   against `gLinuxStage`'s actual final address (both should land in the
+   same `alloc_contig` region ballpark) in case the fix itself has a
+   subtle error.
