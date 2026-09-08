@@ -148,38 +148,45 @@ menuconfig`, disable selinux/netfilter/wifi/most drivers we don't need
 for a console-only or netboot-only target) if faster iteration matters
 more than matching the upstream reference config exactly.
 
+## Update 2026-09-08 (2): kernel build finished
+
+Resumed and completed. Real, verified outputs:
+
+- `linux-apple/arch/arm64/boot/Image.lzma` — 7,113,836 bytes.
+- `linux-apple/dtbpack` — 260,992 bytes, built via
+  `raw.githubusercontent.com/SoMainline/linux-apple-resources/master/dtbpack.sh`
+  (copied into `linux-apple/`, run from there since its `DTBPATH` is
+  relative). Confirmed the `N61` marker is actually present in the packed
+  blob (`Cows`-prefixed format the script writes) — not just "the script
+  exited 0".
+
+No `make` errors at any point in the final resume — this really was just
+a slow build on 2 jobs / modest hardware, exactly as flagged before.
+
 ## Not yet started
 
-- **Finishing the kernel build** (see above — real, bounded, resumable).
-- **`dtbpack.sh`** (`raw.githubusercontent.com/SoMainline/linux-apple-resources/master/dtbpack.sh`)
-  — packs the compiled device trees into the single blob `load_linux.py`
-  expects. Not run yet; needs `dtbs` to finish first.
-- **`phase3/rootfs/`**: installing `pmbootstrap` and working through
-  `pmbootstrap init` (device `apple-iphone6`) → `install` → `initfs
-  hook_add netboot` → `export`. Not attempted this session — deliberately
-  sequenced after the kernel/dtb build, and `pmbootstrap`'s own build
-  system uses cross-arch chroots that are more memory-hungry than
-  anything attempted so far; this box's tight RAM (see above) means it
-  needs its own careful, watched attempt, not tacked onto an already-long
-  session.
+- **`phase3/rootfs/`**: config wizard finished successfully (device
+  `apple-idevice`, not `apple-iphone6` — see `phase3/rootfs/README.md`
+  for why), but `pmbootstrap`'s actual chroot/build operations are
+  blocked on needing interactive `sudo`, which this box doesn't have
+  passwordless. See `phase3/rootfs/README.md` for the exact resume point.
 - **Any real device/USB/DFU interaction.** Deliberately not attempted —
-  needs interactive `sudo` (this box has none passwordless) and, after
-  the `phase3/ramdisk/` incident earlier this project, live-device steps
-  get done with direct user supervision, not by an unattended process.
-  The eventual live command (once `Image.lzma` + `dtbpack` + an initramfs
-  all exist) is `python3 pongo-linux-src/scripts/load_linux.py -k
+  needs interactive `sudo` and, after the `phase3/ramdisk/` incident
+  earlier this project, live-device steps get done with direct user
+  supervision, not by an unattended process. The eventual live command
+  (once `Image.lzma` + `dtbpack` + an initramfs/rootfs all exist) is
+  `python3 pongo-linux-src/scripts/load_linux.py -k
   linux-apple/arch/arm64/boot/Image.lzma -d linux-apple/dtbpack -r
   <initramfs>`, run against a live pongoOS session the same way
   `phase2/tools/omerta_load.py` already is.
 
 ## If this is picked up again
 
-1. Resume the kernel build (see "To resume" above) until
-   `arch/arm64/boot/Image.lzma` exists.
-2. Run `dtbpack.sh` against the built dtbs.
-3. Set up `pmbootstrap` for `phase3/rootfs/`, watching memory closely —
-   don't run it alongside another heavy build.
-4. Only then, with the user present: enter DFU, boot the
+1. ~~Resume the kernel build~~ — **done, `Image.lzma` + `dtbpack` both
+   exist and verified.**
+2. Get `phase3/rootfs/` past its sudo blocker (see that README) to
+   produce an initramfs + exported rootfs for netboot.
+3. Only then, with the user present: enter DFU, boot the
    `pongo-linux-src` build's `Pongo.bin` via `checkra1n`, and run
    `load_linux.py`. Confirm boot log output over the framebuffer/serial
    console before attempting netboot's full rootfs handoff.

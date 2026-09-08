@@ -44,4 +44,4 @@ emulator/work/
 # (Pongo.bin, Image.lzma, dtbs, .config) are also local/reproducible.
 phase3/kernel/pongo-linux-src/
 phase3/kernel/linux-apple/
-phase3/rootfs/pmbootstrap-work/
+phase3/rootfs/pmbootstrap/
