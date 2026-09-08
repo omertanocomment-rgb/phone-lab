@@ -470,19 +470,56 @@ same silent failure a third time, this hypothesis would be substantially
 weakened and the next lead would need to go back to the MMU/early-boot
 assembly path proper.
 
-## If this is picked up again (supersedes the equivalent list after Update 5)
+## Update 2026-09-08 (7): x0/FDT fix tested — same identical failure a third time
 
-1. With the user present: repeat the live-device test using the
-   **rebuilt** `pongo-linux-src/build/Pongo.bin` (same DFU → `checkra1n -c
-   -k .../pongo-linux-src/build/Pongo.bin -E` → `load_linux.py` sequence
-   as before, same kernel/dtbpack/initramfs/cmdline arguments). This is a
-   genuine new hypothesis to test, not a repeat of the prior identical
-   attempts.
-2. If boot output appears: real progress, follow whatever it shows next.
-3. If the exact same silent black-screen/USB-disconnect happens again:
-   the x0/FDT fix, while well-reasoned, wasn't sufficient alone — return
-   to the MMU/early-boot-assembly and physical-UART-access leads from
-   Update (5), and also double check the `gLinuxFDT` rebase math above
-   against `gLinuxStage`'s actual final address (both should land in the
-   same `alloc_contig` region ballpark) in case the fix itself has a
-   subtle error.
+With the user present, repeated the live test using the rebuilt,
+patched `Pongo.bin` — same DFU → `checkra1n -c -k .../pongo-linux-src/build/Pongo.bin
+-E` → `load_linux.py` sequence, same kernel/dtbpack/initramfs/cmdline.
+**Result: identical to both prior attempts.** Screen went black, pongoOS
+disconnected, phone came back up at the same Setup Assistant/Activation
+Lock state, confirmed via `lsusb` (`05ac:12a8`, normal mode). No new
+damage, no new visible signal.
+
+**This means the x0/FDT handoff bug, while real and correctly fixed, was
+not the (or not the only) cause of the silent failure.** Three
+consecutive identical live-device outcomes across three genuinely
+different hypotheses (plain boot, +earlycon, +x0/FDT fix) is a strong
+signal that the actual failure point is earlier and more fundamental than
+any of these — most likely the MMU/exception-level early-boot-assembly
+class of problem flagged back in Update (5), which sits *before* the
+kernel would ever read a device tree, use a UART, or care what's in x0
+for its own console/earlycon setup. A wrong FDT pointer would matter once
+the kernel gets far enough to dereference it — if the crash is earlier
+than that, the fix, though real, never got a chance to matter.
+
+**Not done yet, and genuinely substantial if picked up:** verifying the
+`gLinuxFDT`/`gLinuxStage` rebase math for a subtle error (a plausible
+but unconfirmed alternate explanation — worth checking before assuming
+the MMU path), and the actual MMU/early-boot-assembly investigation
+itself, which needs comparing this exact kernel fork's boot assembly
+(`arch/arm64/kernel/head.S` / equivalent early entry code) against
+whatever Konrad Dybcio's real fix was for other devices in this chip
+family — not established with certainty in Update (6)'s research pass.
+
+## If this is picked up again
+
+1. ~~Live device test~~ / ~~earlycon retest~~ / ~~x0/FDT fix retest~~ —
+   **all three attempted, all three identical silent failures. See
+   Updates (5) and (7).**
+2. Before more live-hardware cycles: verify the `gLinuxFDT` rebase
+   arithmetic in the applied patch against `gLinuxStage`'s actual final
+   address (both should land in the same `alloc_contig` region) — a
+   quick, offline sanity check that could rule out a subtle bug in the
+   fix itself before assuming a deeper MMU problem.
+3. The substantial remaining path is the MMU/early-boot-assembly
+   investigation proper — comparing this kernel fork's actual early-entry
+   assembly against whatever the real historical fix was, which Update
+   (6)'s research pass did not pin down with certainty. This is
+   genuinely open-ended, matching `PLAN.md`'s "multi-month research"
+   framing for this whole tier.
+4. Physical UART hardware access remains the other real path (a
+   hardware-modification undertaking, not yet scoped or authorized).
+5. Three identical live-device results in a row is a strong signal to
+   stop repeating the same class of live test without first doing one of
+   #2 or #3 — a fourth attempt without new groundwork is unlikely to
+   teach us anything new.
