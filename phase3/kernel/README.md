@@ -76,7 +76,19 @@ the repo, host-specific, not committed** — same treatment as
 `source ~/.bashrc.phase3-kernel-env && make all` after patching one known
 upstream bug the same way phase2 already documented — a missing
 `#include <stdarg.h>` in `src/kernel/task.c`, `clang`-version-dependent,
-not this project's bug):
+not this project's bug). Two more clang-21-vs-older-clang strictness fixes
+needed to get a clean `make all` again after a host environment reset
+(`ld64`'s own apt deps — `libxml2`/`libssl1.1`/`libicu70`/
+`libblocksruntime0` — had also been fully uninstalled by the same reset;
+reinstalled from the already-cached `.deb`s in `~/phase3-kernel-deps/` in
+dependency order): `src/kernel/mm.c` had two genuinely-dead local
+variables (`vm_index_start`, a shadowed local `is_tt1`) that only newer
+clang flags as `-Werror`-fatal, silenced with
+`__attribute__((unused))`; `src/drivers/sep/sep.c` had a stale
+forward-declaration of `sep_help()` with the wrong signature (real
+definition takes `(const char*, char*)`), which newer clang's C23-leaning
+diagnostics now reject — corrected the declaration to match. Neither
+touches this project's own logic, both are upstream pongoOS quirks:
 - `Pongo.bin` (676,192 bytes)
 - `checkra1n-kpf-pongo` (87,824 bytes)
 - `PongoConsolidated.bin` (764,032 bytes)
@@ -501,25 +513,85 @@ itself, which needs comparing this exact kernel fork's boot assembly
 whatever Konrad Dybcio's real fix was for other devices in this chip
 family — not established with certainty in Update (6)'s research pass.
 
+## Update 2026-09-08 (8): offline sanity check found a second, real FDT bug — untested on hardware
+
+Picked up item #2 from the previous checklist (verify the `gLinuxFDT`
+rebase arithmetic) as a scoped, offline-only task — no live device
+touched. It surfaced more than a rebase-math slip: a second, distinct bug
+in the same handoff path, independent of the one fixed in Update (6).
+
+**The bug:** `linux_prep_boot()` (`src/modules/linux/linux.c`) computes
+`gLinuxFDT` as an offset into the *staging buffer* `alloc_contig()`
+returned (`gLinuxStage`'s original value, before that variable itself
+gets rebased a few lines later at `linux.c:343`). But `linux_boot()`
+(called right before the `exit_to_el1_image` handoff in `entry.c`) does
+`memcpy(gEntryPoint, gLinuxStage, gLinuxStageSize)` — physically
+relocating the *entire* kernel-image+FDT blob from that staging buffer to
+the real boot address `gEntryPoint` (`0x803000000`). `gLinuxStageSize`
+already includes the FDT (`image_size + LINUX_DTREE_SIZE`), so the FDT
+bytes really do get copied to `gEntryPoint + image_size_aligned` — but
+`gLinuxFDT` itself was never updated to point there. Update (6)'s fix
+correctly converted `gLinuxFDT`'s *addressing scheme* (cacheable VA →
+physical), but that only fixed how to interpret the pointer, not that the
+pointer's target had since been superseded by the relocation. The x0
+handed to Linux still pointed at the pre-copy staging location — whether
+that memory remains mapped/valid at the point Linux's own MMU-off early
+boot code tries to read it is unknown, but it's certainly not where the
+kernel expects to find *its own* device tree relative to where it was
+actually loaded.
+
+Notably, the existing code already computes the *correct* pattern one
+line above, for a variable that turns out to be otherwise unused on the
+Linux path: `gBootArgs = (gEntryPoint + image_size + 7) & -8` — this is
+exactly the right formula (offset from `gEntryPoint`, not from the
+staging buffer), just never wired up for the FDT.
+
+**Fix applied** (`src/modules/linux/linux.c`, `src/kernel/entry.c`,
+`pongo-linux-src`): added a new global `gLinuxFDTFinal`, computed
+immediately after `gLinuxFDT` and before `gLinuxStage`'s rebase, using
+the same `(gEntryPoint + image_size + 7) & -8` formula as the existing
+(dead-for-Linux) `gBootArgs` line. `entry.c`'s `BOOT_FLAG_LINUX` branch
+now passes `gLinuxFDTFinal` directly (already in `gEntryPoint`'s
+addressing scheme, no further rebase needed) instead of re-deriving a
+physical address from the stale `gLinuxFDT`. Rebuilt clean (`make all`,
+`build/Pongo.bin` regenerated, 676,192 bytes, 2026-09-08 10:52) after
+also resolving the environment/toolchain drift noted above (`ld64` and
+its deps had to be reinstalled from cache; two clang-21 strictness fixes
+in `mm.c`/`sep.c` — see that section).
+
+**Not tested on real hardware this pass** — per this project's standing
+rule, live-device steps happen with the user present, and this task was
+explicitly scoped to the offline sanity check only. This is a concrete,
+well-sourced bug with a very plausible causal story for the identical
+silent failures seen across all three prior live attempts (a bad/orphaned
+FDT pointer would explain a hang regardless of whether the crash is
+"early" or "late" in Linux's boot, since it doesn't require MMU/assembly
+involvement at all — a much simpler explanation than the MMU/early-boot
+theory Updates (5) and (7) were leaning toward). If the next live test
+still shows the identical black-screen/USB-disconnect signature a fourth
+time, that would be a genuinely strong result — it would mean neither of
+the two real, distinct FDT bugs found so far was the actual cause, and
+the MMU/early-boot-assembly path from Update (5) would become the clear
+leading hypothesis.
+
 ## If this is picked up again
 
-1. ~~Live device test~~ / ~~earlycon retest~~ / ~~x0/FDT fix retest~~ —
-   **all three attempted, all three identical silent failures. See
-   Updates (5) and (7).**
-2. Before more live-hardware cycles: verify the `gLinuxFDT` rebase
-   arithmetic in the applied patch against `gLinuxStage`'s actual final
-   address (both should land in the same `alloc_contig` region) — a
-   quick, offline sanity check that could rule out a subtle bug in the
-   fix itself before assuming a deeper MMU problem.
-3. The substantial remaining path is the MMU/early-boot-assembly
-   investigation proper — comparing this kernel fork's actual early-entry
-   assembly against whatever the real historical fix was, which Update
-   (6)'s research pass did not pin down with certainty. This is
-   genuinely open-ended, matching `PLAN.md`'s "multi-month research"
-   framing for this whole tier.
+1. **Next live test should use the Update (8) fix** — this is a new,
+   previously-untested hypothesis (a stale post-relocation FDT pointer),
+   distinct from the addressing-scheme fix tested in Update (7). Rebuild
+   is already done and confirmed clean; only the live DFU/USB cycle
+   remains, with the user present per standing rule.
+2. ~~Live device test~~ / ~~earlycon retest~~ / ~~x0/FDT fix retest~~ /
+   ~~offline FDT rebase sanity check~~ — **all four attempted; the fourth
+   (offline) found a second real bug, now fixed. See Updates (5), (7),
+   and (8).**
+3. If the Update (8) fix is retested live and still shows the identical
+   failure signature, the MMU/early-boot-assembly investigation from
+   Update (5) becomes the clear next lead — comparing this kernel fork's
+   actual early-entry assembly (`arch/arm64/kernel/head.S` equivalent)
+   against whatever Konrad Dybcio's real fix was for other devices in
+   this chip family, which Update (6)'s research pass did not pin down
+   with certainty. This is genuinely open-ended, matching `PLAN.md`'s
+   "multi-month research" framing for this whole tier.
 4. Physical UART hardware access remains the other real path (a
    hardware-modification undertaking, not yet scoped or authorized).
-5. Three identical live-device results in a row is a strong signal to
-   stop repeating the same class of live test without first doing one of
-   #2 or #3 — a fourth attempt without new groundwork is unlikely to
-   teach us anything new.
