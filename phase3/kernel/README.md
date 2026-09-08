@@ -225,23 +225,111 @@ verification, or the display handoff from pongoOS's own console may not
 match what this kernel's simple-framebuffer driver expects). This is a
 real, unresolved technical gap, not something worked around.
 
+## Update 2026-09-08 (4): earlycon debugging — confident cmdline found, no rebuild needed
+
+Investigated why the boot produces no visible output at all (not just
+"wrong framebuffer" — genuinely nothing, on either a display or a
+console). Real findings, all confirmed by reading the actual device tree
+and kernel source, not guessed:
+
+**There is no framebuffer node anywhere in the A7-A8X (`t7000`) device
+trees.** Checked `t7000-n61.dts`, `t7000-6.dtsi`, and `t7000.dtsi`
+directly: no `simple-framebuffer` compatible node, no `chosen {
+stdout-path }` at all — the `chosen` node in `t7000.dtsi` only sets
+`#address-cells`/`#size-cells`/`ranges`. For comparison,
+`arch/arm64/boot/dts/apple/t8103-jxxx.dtsi` (the M1 Mac Mini family, a
+much further-along port in this same kernel fork) *does* have
+`stdout-path = "serial0"` — the t7000/A8 port genuinely doesn't wire up
+a console yet, at the device-tree level, at all. This alone would fully
+explain a silent boot even if the kernel is otherwise running fine:
+`CONFIG_FB_SIMPLE=y` is enabled in `.config`, but it has nothing to
+attach to without a framebuffer node.
+
+**But there is a real, enabled, earlycon-capable UART.**
+`t7000.dtsi` defines `serial0: serial@20a0c0000` with `compatible =
+"apple,s5l-uart"`, `reg = <0x2 0x0a0c0000 0x0 0x4000>` (i.e. MMIO base
+`0x20a0c0000`), `reg-io-width = <4>` — and `t7000-6.dtsi` turns it on for
+the iPhone 6 specifically (`&serial0 { status = "okay"; }`, no comment,
+unlike every other serial node which is labeled Bluetooth/baseband/etc. —
+consistent with serial0 being the generic/debug UART). Confirmed in
+`drivers/tty/serial/samsung_tty.c`:
+```
+OF_EARLYCON_DECLARE(s5l, "apple,s5l-uart", apple_s5l_early_console_setup);
+```
+Apple's S5L UART is close enough to Samsung's S3C2410 IP block that it
+reuses the same driver (the driver's own comment says as much). Traced
+`setup_earlycon()` in `drivers/tty/serial/earlycon.c`: it matches
+`earlycon=<name>,...` against the name registered via
+`OF_EARLYCON_DECLARE`'s first argument (here, `s5l`) directly from the
+kernel command line — **this does not depend on `stdout-path` being set
+in the device tree at all**, so the missing `chosen` entry doesn't block
+it. `reg-io-width = <4>` maps to the `mmio32` earlycon address-space
+spec. The driver name for the later (post-earlycon) console is
+`ttySAC0` (from `S3C24XX_SERIAL_NAME "ttySAC"` in the same file).
+
+**Confident earlycon spec:** `earlycon=s5l,mmio32,0x20a0c0000
+console=ttySAC0`
+
+**No rebuild was needed** — checked `.config` directly:
+`CONFIG_SERIAL_EARLYCON=y`, `CONFIG_SERIAL_SAMSUNG=y`,
+`CONFIG_SERIAL_SAMSUNG_CONSOLE=y` are all already set. The existing
+`Image.lzma` (7,113,836 bytes, unchanged) already has this driver built
+in.
+
+Also checked `pongo-linux-src/scripts/load_linux.py`'s `-c`/`--cmdline`
+handling and `src/shell/linux.c`'s `linux_cmdline` command: `-c` sends
+`linux_cmdline <string>\n` to pongoOS before boot, which does a plain
+`memcpy` into the buffer passed to Linux as `bootargs` — a clean
+replace, nothing to conflict with (the dtbpack doesn't set its own
+`bootargs` either).
+
+**Exact next live-device command** (only the `-c` argument is new):
+```
+python3 scripts/load_linux.py \
+  -k linux-apple/arch/arm64/boot/Image.lzma \
+  -d linux-apple/dtbpack \
+  -r <pmbootstrap's exported initramfs> \
+  -c "earlycon=s5l,mmio32,0x20a0c0000 console=ttySAC0"
+```
+
+**What this will and won't tell us:** if boot text appears, we now have
+a real console and can actually see where/why it panics or hangs (if it
+still does) — a huge diagnostic upgrade from a black screen. If *still*
+nothing appears even with this earlycon spec, that's itself a real
+finding: it would mean the failure happens before the kernel's own
+console/earlycon init code runs at all (e.g. very early boot assembly,
+an MMU/exception-level setup fault — the Hackaday writeup on this same
+kernel fork's A7/A8/A8X bring-up specifically flagged the MMU-enable
+sequence as the thing that blocked progress for over a year on other
+devices in this family, so an early-EL/MMU-stage fault on this
+specific device is a real possibility, not a remote one) — narrowing the
+problem rather than resolving it. Not rebuilt, not tried against real
+hardware, this session — per this project's standing rule, that's the
+next live-device step, done with the user present.
+
+Not independently re-verified against `ivonblog.com`'s post for a more
+specific panic location — the device-tree/kernel-source evidence above
+is more concrete and specific to this exact build than what that post is
+likely to add, so re-fetching it wasn't judged worth the time this round.
+
 ## If this is picked up again
 
 1. ~~Resume the kernel build~~ / ~~get phase3/rootfs/ past its sudo
    blocker~~ — **all done, see above and phase3/rootfs/README.md.**
 2. ~~Live device test~~ — **attempted, kernel doesn't reach visible
-   boot output, see above.** Before repeating this exact test, consider:
-   - Adding `earlycon` to the kernel cmdline (`load_linux.py -c`) to get
-     any console output earlier in boot, before framebuffer/display
-     drivers would normally init.
-   - Checking whether `CONFIG_FB_SIMPLE`/the actual apple-specific
-     display driver is enabled in `example.config` and whether pongoOS's
-     own console hand-off address matches what this specific kernel
-     build expects.
-   - Trying a much smaller/`console`-only kernel config (trim
-     selinux/netfilter/wifi/most drivers per the earlier note) to rule
-     out an unrelated init-time crash in a driver we don't even need.
-   - Re-reading `ivonblog.com`'s post for exactly where in the boot
-     sequence their kernel panic happened, if that detail exists there.
-3. Each live-device attempt should be done with the user present, same
-   as this one — no change to that rule.
+   boot output, see above.**
+3. ~~Diagnose why there's no console output~~ — **root-caused: no
+   framebuffer node in this device's DT at all, but a real earlycon path
+   exists via the enabled `serial0` UART. Confident cmdline identified,
+   no rebuild needed — see Update (4) above.** Next: run the live test
+   again with `-c "earlycon=s5l,mmio32,0x20a0c0000 console=ttySAC0"`,
+   with the user present, same as every other real-device step.
+4. If earlycon output still shows nothing at all, the next real lead is
+   the MMU/early-boot-assembly path this kernel fork's own upstream
+   history flagged as its hardest bring-up problem for this chip family
+   — that's a much deeper investigation (comparing this exact kernel's
+   boot assembly against whatever the Hackaday-covered fix actually
+   changed), not a quick follow-up.
+5. If earlycon output appears and shows a panic, that panic's own
+   backtrace becomes the next concrete thing to chase — a real
+   diagnostic target instead of guessing blind.
