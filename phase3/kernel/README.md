@@ -1256,3 +1256,33 @@ this is right, the failure signature should finally change — either
 Linux produces visible output, or it fails further in, which would
 itself be real progress for the first time in 10 attempts. Full detail
 in `phase3/kernel/pongo-linux-src/TESTLOG.md` (local-only, gitignored).
+
+## Update 2026-09-13 (22): Attempt #11 — Update 21's fix wasn't actually tested yet; a bug in the diagnostic itself, found and fixed
+
+Live-tested the Update 21 (`smemcpy128`) build. A photo caught another
+double panic, same structural shape as Attempt #10's. Good news first:
+`LP9c`-`LP9f` (Update 19) all printed successfully, and `LP3a` read
+exactly `physBase=800000000` as Update 17/18 predicted — real,
+independently-confirmed progress.
+
+But `LP9g` (Update 20) never printed at all — the crash happened
+*inside* that diagnostic block, meaning `linux_boot()`'s fixed `memcpy`
+call was never actually reached. The first panic's `FAR` sat only ~20
+bytes from `SP`, pointing at a stack-proximate fault.
+`set_exception_stack_core0()` does `msr spsel, #1`, switching all
+subsequent code onto the small, fixed `_exception_stack` — `LP9c`-`LP9f`'s
+plain `screen_puts()` never stressed it, but `LP9g`'s `siprintf()` call
+(variadic args, its own internal calls) was apparently enough to run
+past the end of it. A different bug class entirely from Update 21's
+(stack sizing, not NEON-on-Device-memory) and introduced by this
+project's own diagnostic code, not the real boot path.
+
+**Fix**: removed the `LP9g` block. Its question is now secondary to
+Update 21's confirmed fix, and re-adding an equivalent check without
+`siprintf` isn't worth risking the same class of bug again right before
+that fix finally gets tested. Rebuilt clean (`build/Pongo.bin`,
+676,192 bytes, 2026-09-13 18:25).
+
+**Not yet live-tested — this will be the first attempt to actually
+reach the Update 21 fix with nothing else in the way.** Full detail in
+`phase3/kernel/pongo-linux-src/TESTLOG.md` (local-only, gitignored).
