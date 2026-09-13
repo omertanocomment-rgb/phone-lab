@@ -574,24 +574,634 @@ the two real, distinct FDT bugs found so far was the actual cause, and
 the MMU/early-boot-assembly path from Update (5) would become the clear
 leading hypothesis.
 
+## Update 2026-09-08 (9): offline MMU/early-boot investigation found a THIRD real bug — a heap buffer overflow in kernel decompression — untested on hardware
+
+Picked up the Update (5)/(7) "MMU/early-boot-assembly" lead as a scoped,
+offline-only task (no live device touched). Before diving into ARM64
+`head.S`-equivalent assembly comparison, first researched what actually
+unblocked Konrad Dybcio's own upstream A7/A8/A8X bring-up (the
+[Hackaday-covered breakthrough](https://hackaday.com/2022/06/12/boot-mainline-linux-on-apple-a7-a8-and-a8x-devices/)
+referenced since Update (5)): his own account is that the MMU-enable
+blocker turned out to be **"a single line difference in how they loaded
+the Linux image"** — not an MMU/assembly bug at all. That pointed the
+search back at this project's own kernel-image loading path
+(`linux_prep_boot()`/`linux_boot()` in
+`pongo-linux-src/src/modules/linux/linux.c`) rather than genuine
+ARM64 early-boot assembly.
+
+**The bug:** `linux_prep_boot()` sizes the kernel staging buffer off the
+**compressed** `Image.lzma` payload size —
+`gLinuxStage = alloc_contig(image_size + LINUX_DTREE_SIZE)`, where
+`image_size` at that point is still `loader_xfer_recv_count` (the
+compressed upload size, ~7MB per Update (3)'s build) — but then bounds
+the LZMA decompressor with a **hardcoded `dest_size = 0x10000000`**
+(256MiB), independent of what was actually allocated:
+```c
+size_t dest_size = 0x10000000;
+...
+gLinuxStage = (void *)alloc_contig(image_size + LINUX_DTREE_SIZE);
+ret = unlzma_decompress((uint8_t *)gLinuxStage, &dest_size, loader_xfer_recv_data, image_size);
+```
+`unlzma_decompress()`'s `dest_size` is `LzmaDec`'s `dicBufSize` — the
+actual bound the decoder writes within
+(`p.dicBufSize = outSize;` in `src/lib/lzma/lzmadec.c`). A real arm64
+`Image` decompresses to several times its compressed size, so
+`LzmaDec_DecodeToDic` was free to write tens of MB **past the end of a
+buffer sized for only ~9MB** — a genuine heap buffer overflow, executing
+in pongoOS's own C code while its MMU/scheduler are still live, **before
+Linux is ever jumped into**. This fully explains the totally silent,
+identical black-screen/USB-disconnect failure seen across all three
+prior live attempts even after two real, correctly-reasoned FDT-handoff
+fixes (Updates 6 and 8): the crash was never in the handoff at all — it
+happened earlier, corrupting heap state during kernel decompression
+itself, which is also why neither FDT fix changed the observed outcome.
+
+**Fix applied** (`src/modules/linux/linux.c`, `pongo-linux-src`): the
+classic `.lzma` alone-format header is `[5-byte props][8-byte LE
+uncompressed size][compressed data]` — matching this file's own
+`propsize = LZMA_PROPS_SIZE(5) + 8` framing exactly. Read the real
+uncompressed size from that header up front and size both the allocation
+and the decompressor's bound off it, instead of guessing:
+```c
+uint64_t uncompressed_size = *(uint64_t *)(loader_xfer_recv_data + LZMA_PROPS_SIZE);
+gLinuxStage = (void *)alloc_contig(uncompressed_size + LINUX_DTREE_SIZE);
+dest_size = uncompressed_size;
+ret = unlzma_decompress((uint8_t *)gLinuxStage, &dest_size, loader_xfer_recv_data, image_size);
+```
+Also hardened the "not actually compressed" fallback branch (`ret !=
+SZ_OK`, i.e. a raw pre-decompressed `Image` was uploaded instead): that
+branch's own `image_size` comes from a different header offset entirely,
+so the LZMA-header-derived allocation above can't be trusted to have
+sized `gLinuxStage` correctly for it — added an explicit re-`alloc_contig`
+before the `memcpy` if the raw image turns out bigger than what was
+allocated for the LZMA-path guess, so this branch can't overflow either
+regardless of which size guess was actually right.
+
+Rebuilt clean (`make all`, no errors, `build/Pongo.bin` regenerated,
+676,192 bytes, 2026-09-08 12:18).
+
+**Not tested on real hardware this pass** — per this project's standing
+rule, live-device steps happen with the user present, and this task was
+scoped to offline research only. This is a concrete, well-sourced bug
+(confirmed by reading `unlzma_decompress()`'s actual bound semantics in
+`lzmadec.c`, not guessed) with a very plausible causal story for all
+three identical prior failures — a much simpler, earlier-firing
+explanation than the MMU/early-boot-assembly theory Updates (5) and (7)
+were leaning toward, and one that doesn't require any ARM64 assembly
+comparison work at all. If the next live test still shows the identical
+black-screen/USB-disconnect signature a fourth time, that would be a
+genuinely strong result: it would mean none of the three real, distinct
+bugs found across Updates (6), (8), and (9) was the actual cause, and the
+MMU/early-boot-assembly path would become the clear remaining lead.
+
+## Update 2026-09-08 (10): Update (9) fix retested live — identical failure a fourth time
+
+Live test with the user present, using `build/Pongo.bin` with the Update
+(9) decompression-overflow fix applied (still also containing the Updates
+(7)/(8) FDT-handoff fixes). Sequence: `usbfs_memory_mb` bumped to 512,
+`sudo checkra1n -c -k build/Pongo.bin -E` (succeeded, device re-enumerated
+as pongoOS `05ac:4141`), then `sudo python3 scripts/load_linux.py -k
+Image.lzma -d dtbpack -r <pmbootstrap initramfs> -c
+"earlycon=s5l,mmio32,0x20a0c0000 console=ttySAC0"`. All four transfer
+stages (ramdisk, fdt, kernel, `bootl`) completed and reported success from
+the script's own perspective (a caught disconnect on `bootl`'s ctrl
+transfer, which the script treats as the expected success signature).
+
+**Result: identical outcome to all three prior live attempts.** Device
+disconnected from pongoOS and re-enumerated a few seconds later as normal
+iOS (`05ac:12a8`), confirmed via `ideviceinfo` to be the exact same
+known-erased baseline from the original ramdisk incident (`BuildVersion:
+16H88`, `ActivationState: Unactivated`, `BrickState: true`, same
+HardwareModel/ChipID) — no new or additional damage, just the same
+fallback signature a fourth time.
+
+**This is the strong result flagged as possible in Update (9):** none of
+the three real, distinct, well-sourced bugs found and fixed across
+Updates (6), (8), and (9) — two independent FDT/x0-handoff issues plus a
+genuine kernel-decompression heap buffer overflow — changed the observed
+failure at all. That means the actual blocker sits at or before all of
+that code ever runs, which points squarely at the MMU/early-boot-assembly
+class of problem flagged since Update (5), or a failure mode invisible to
+USB-side observation entirely (matching Konrad Dybcio's own account that
+other devices in this chip family needed real assembly-level fixes, not
+just data-handling fixes like the three found here).
+
+[See Update (11) below — the MMU-off theory in this paragraph was
+subsequently traced and disproven; pongoOS already disables the MMU
+correctly for every boot path via `lowlevel_cleanup()`.]
+
+## Update 2026-09-08 (11): two more hypotheses chased to ground (one real-but-harmless fix, one disproven) + a major reframing from upstream history
+
+Offline-only session (device untouched). Full writeup with code excerpts
+above this section; summary:
+
+- **`gBootArgs` global-pointer corruption in `linux_prep_boot()`:**
+  real bug (a leftover reassignment later dereferenced unconditionally at
+  `entry.c:360`), but exhaustively traced to be harmless in practice — the
+  corrupted value (`gFramebuffer`) is never read again before the Linux
+  jump, and the address itself doesn't even fault (it falls inside
+  pongoOS's own identity-mapped RWX window). **Fixed anyway** (cheap,
+  correct, removes a landmine for future changes) but **not the cause**
+  of the four observed failures.
+- **MMU left on during the jump:** disproven. `lowlevel_cleanup()`
+  already calls `cache_clean_and_invalidate()` over all of RAM and then
+  `disable_mmu_el1()` (a correct SCTLR_EL1.M clear + TLBI + icache
+  invalidate) for every boot path, satisfying the arm64 boot protocol's
+  mandatory preconditions before `jump_to_image` ever runs. No fix
+  applied; this closes out Update (5)'s original theory as stated.
+- **Found Konrad Dybcio's actual upstream breakthrough commit**
+  (`pongo-linux-src`'s own `origin` is `konradybcio/pongoOS` — real, deep
+  git history, not a shallow clone): `5aabd49 "Linux."`, the literal
+  "single line difference" the Hackaday piece quoted —
+  `gEntryPoint = 0x800080000` → `0x803000000`. **This project's code
+  already has that exact value** — the historic fix was already
+  inherited, nothing new to apply.
+- **The load-bearing new finding:** that same breakthrough commit's own
+  message stated *"only supported on iPhone 7 for now... behavior on
+  non-A10 devices is undefined!!"*, and a full scan of every Linux-module
+  commit since (`git log --oneline --all -i --grep="a7\|a8\|t7000\|
+  t7001\|8960"` across all 185 commits) turns up **zero** that validate
+  or fix loader-side behavior for A7/A8/A8X — every post-breakthrough
+  commit targets A10/A11-family hardware (iPhone 7, iPhone 8, iPad Pro,
+  iPhone X). The kernel *device tree* has real upstream A8/T7000 support
+  (`t7000-n61.dts`, found earlier in `konradybcio/linux-apple`), but the
+  *loader* this project chainloads through has apparently **never been
+  run against A7/A8/A8X hardware by anyone**, upstream or otherwise.
+
+Rebuilt clean (`make clean && make all`, `build/Pongo.bin`, 676,192
+bytes, 2026-09-08 13:20). Not live-tested this pass — the fix applied
+isn't expected to change the outcome (it was traced as harmless), so
+there's no new reason to expect a 5th live attempt to behave differently
+yet.
+
+## Update 2026-09-08 (12): checked `gEntryPoint` against the real T7000 memory map — found it's correct, but found the ACTUAL bug instead (LZMA "unknown size" sentinel)
+
+User asked specifically to check `gEntryPoint` placement against the real
+T7000 memory map. Read `t7000.dtsi`/`t7000-n61.dts` directly
+(`konradybcio/linux-apple`, the same author as the loader): `system_memory`
+confirms 1GiB RAM at `0x800000000` ("All A8 devices come with at least
+1 GiB of RAM"), and a `reserved-memory` node named `hacky_reserved_mem`
+reserves exactly `[0x800000000, 0x803000000)` — 48MiB — with the candid
+comment *"TODO: include proper reservations, this makes it at least
+boot.."*. That upper bound is byte-for-byte the same address as this
+project's `gEntryPoint`. Traced `gEntryPoint`'s own history in
+`pongo-linux-src` (commit `2796b5e "linux: reserve stuff properly +
+cleanups"`, 2022-09-24): it's a deliberate fixed placement chosen to land
+right after this same low-memory reservation, with SEPFW separately
+reserved dynamically from the device's own ADT. **Conclusion: `gEntryPoint`
+placement is correct and consistent with the real T7000 memory map — this
+hypothesis is closed, not the cause.**
+
+While confirming that, found the actual bug: checked what the real
+`Image.lzma` this project builds looks like at the byte level.
+```
+$ xxd -l 16 -p arch/arm64/boot/Image.lzma
+5d00000004ffffffffffffffff000f88
+```
+`5d 00 00 00 04` is the standard LZMA properties (lc/lp/pb + 64MiB
+dictionary size). The next 8 bytes — the alone-format header's
+"uncompressed size" field, which Update (9)'s fix reads directly — are
+`ff ff ff ff ff ff ff ff`. **That's not a real size; it's the standard
+LZMA "size unknown" sentinel**, written whenever the encoder is fed a
+stream instead of a file with a known length up front (exactly how a
+piped `xz --format=lzma`/`lzma` kernel build step normally runs). Update
+(9)'s fix trusts this field unconditionally:
+```c
+uint64_t uncompressed_size = *(uint64_t *)(loader_xfer_recv_data + LZMA_PROPS_SIZE);
+gLinuxStage = (void *)alloc_contig(uncompressed_size + LINUX_DTREE_SIZE);
+dest_size = uncompressed_size;
+```
+With `uncompressed_size = 0xFFFFFFFFFFFFFFFF`, the allocation size wraps
+around the 64-bit boundary to `~0x1FFFFF` (**~2MiB**) — while `dest_size`
+(the decompressor's own output-buffer bound) keeps the full sentinel
+value. Checked the real uncompressed kernel this project actually built
+(`arch/arm64/boot/Image`, still on disk from the earlier build): **23.87
+MiB on disk, 24.38 MiB per its own embedded header field** — over 10x
+bigger than the ~2MiB buffer Update (9)'s "fix" actually allocates for
+it. This either overflows that undersized buffer during decompression, or
+(if `LzmaDec`'s internal bound-checking clamps and truncates instead —
+`lzmadec.c:791` has a `dicBufSize`-clamping path) fails and falls through
+to the code's own `puts("Assuming decompressed kernel.")` branch, which
+then treats the still-compressed LZMA bytes as a raw pre-decompressed
+`Image` and boots that garbage. **Either mechanism is a 100%-reproducible,
+silent, pre-Linux failure on literally every attempt with this exact
+kernel file** — fully explaining why Update (9)'s fix changed nothing
+across all four live tests: it replaced one overflow (9MiB buffer, 256MiB
+bound) with a worse one (2MiB buffer, ~18-exabyte bound), not an actual
+fix for how this kernel's `Image.lzma` is really encoded.
+
+**Fix** (`linux.c`): validate the header's uncompressed-size field before
+trusting it — reject the sentinel (`UINT64_MAX`), reject zero, reject
+anything implausibly large — and fall back to a fixed, generous 64MiB
+bound (over 2.5x the real ~24MiB kernel, matching this same header's own
+64MiB LZMA dictionary size) whenever the header can't be trusted. This
+keeps the precise-size path for any future kernel image that *does*
+carry a real size, while making this project's actual kernel (and any
+other stream-compressed one) safe by construction instead of by luck.
+
+Rebuilt clean (`make all`, no errors/warnings, `build/Pongo.bin`, 676,192
+bytes, 2026-09-08 13:40). **This is a genuinely new, concrete, data-
+verified hypothesis** (confirmed by reading this exact project's own
+built `Image.lzma` and `Image` files byte-for-byte, not guessed) — unlike
+the two hypotheses chased down earlier this same session (`gBootArgs`
+corruption: real but harmless; MMU-left-on: disproven), this one has a
+direct, checkable causal chain from "wrong buffer size" to "silent crash
+before Linux ever runs," on every single one of the four prior attempts.
+**A 5th live test is warranted once the user is present and ready** — not
+yet run this pass (offline-only per this session's scope).
+
+## Update 2026-09-08 (13): Update (12) fix retested live — identical failure a FIFTH time
+
+Live test with the user present, using the Update (12) build (built
+13:40, confirmed not stale — tested well after). Full cycle: DFU →
+`checkra1n -c -k build/Pongo.bin -E` succeeded (pongoOS `05ac:4141`
+confirmed live) → `load_linux.py` with the same kernel/dtbpack/initramfs/
+cmdline as every prior attempt.
+
+**Result: byte-for-byte identical to all four prior attempts.** Device
+disconnected and re-enumerated as normal iOS (`05ac:12a8`); `ideviceinfo`
+confirmed the exact same known-erased baseline (`BuildVersion 16H88`,
+`ActivationState: Unactivated`, `BrickState: true`, same UDID). Screen
+showed "Hello" again — the same Setup Assistant signature as every prior
+attempt.
+
+This is a genuinely surprising negative result: Update (12)'s finding was
+not inferred, it was a direct byte-level read of this project's own
+`Image.lzma` header (confirmed `0xFFFFFFFFFFFFFFFF` sentinel) and its own
+built `Image` (confirmed ~24MiB, ~10x the ~2MiB the old code allocated
+for it) — as solid a causal chain as this project has produced. That it
+changed nothing means one of:
+
+1. The sizing bug was real but not actually reached first — something
+   earlier in `linux_prep_boot()` (ramdisk staging, FDT
+   init/`fdt_open_into`, the ADT/SEPFW lookup, the display-register poke
+   at the top of the function) already fails before decompression is
+   ever attempted.
+2. `LzmaDecode()` itself has a further issue independent of buffer
+   sizing (checked `unlzma_decompress()`'s call uses `LZMA_FINISH_ANY`,
+   which shouldn't require an exact size match — this was checked, not
+   assumed, but not exhaustively verified against `LzmaDecode`'s full
+   implementation).
+3. The real blocker is genuinely earlier and lower-level than anything
+   reachable by reading `linux.c`/`entry.c` C code — back to
+   early-boot-assembly or a hardware/SoC-level mismatch that no amount of
+   further C-level guessing will find without real hardware signal.
+
+**Five live attempts, four independent verified-real bugs found and
+fixed (two FDT-handoff issues, a decompression sizing issue found twice
+under two different mechanisms, one harmless gBootArgs corruption), one
+theory disproven (MMU-off), one placement confirmed correct
+(`gEntryPoint` vs. the real T7000 memory map) — and the observed failure
+has not changed once.** This is no longer "keep finding bugs and
+retesting" territory. Per the contingency already laid out after Update
+(12): **physical UART hardware access is now clearly the better use of
+further effort** — continued guess-and-retest cycles against a device
+that gives zero hardware-observable feedback over USB have a
+demonstrated, repeated track record of not teaching us anything new, no
+matter how well-verified the fix going in.
+
 ## If this is picked up again
 
-1. **Next live test should use the Update (8) fix** — this is a new,
-   previously-untested hypothesis (a stale post-relocation FDT pointer),
-   distinct from the addressing-scheme fix tested in Update (7). Rebuild
-   is already done and confirmed clean; only the live DFU/USB cycle
-   remains, with the user present per standing rule.
-2. ~~Live device test~~ / ~~earlycon retest~~ / ~~x0/FDT fix retest~~ /
-   ~~offline FDT rebase sanity check~~ — **all four attempted; the fourth
-   (offline) found a second real bug, now fixed. See Updates (5), (7),
-   and (8).**
-3. If the Update (8) fix is retested live and still shows the identical
-   failure signature, the MMU/early-boot-assembly investigation from
-   Update (5) becomes the clear next lead — comparing this kernel fork's
-   actual early-entry assembly (`arch/arm64/kernel/head.S` equivalent)
-   against whatever Konrad Dybcio's real fix was for other devices in
-   this chip family, which Update (6)'s research pass did not pin down
-   with certainty. This is genuinely open-ended, matching `PLAN.md`'s
-   "multi-month research" framing for this whole tier.
-4. Physical UART hardware access remains the other real path (a
-   hardware-modification undertaking, not yet scoped or authorized).
+1. ~~Live device test~~ / ~~earlycon retest~~ / ~~x0/FDT fix retest~~ /
+   ~~offline FDT rebase sanity check~~ / ~~offline decompression-overflow
+   investigation~~ / ~~Update (9) fix live retest~~ / ~~gBootArgs
+   corruption trace~~ / ~~MMU-off-at-jump trace~~ / ~~gEntryPoint vs. real
+   T7000 memory map~~ / ~~Update (12) fix live retest~~ — **all ten
+   attempted. Five live attempts, all byte-for-byte identical.** Do not
+   run an eleventh live attempt without either (a) real hardware signal
+   from UART, or (b) a specific, checkable hypothesis for something
+   earlier than kernel decompression (see Update 13's point 1) — another
+   "found a plausible C-level bug, rebuilt, retested" cycle has now
+   failed to change the outcome four times in a row even when the bug was
+   real and well-verified each time.
+2. **Physical UART hardware access is the recommended next step.** It's
+   the only way left to get real hardware-observable signal (actual
+   serial output or a crash program-counter/address) instead of another
+   blind guess-and-retest cycle. This is a hardware-modification
+   undertaking (probably wiring into the UART TX/RX/GND test points on
+   the iPhone 6 logic board and reading it with a USB-serial adapter at
+   the right voltage/baud) — not yet scoped, not yet authorized. Needs an
+   explicit decision from the user before any board-level work is
+   attempted, since it's irreversible in a way pure software attempts
+   aren't.
+3. If UART access is not pursued, the remaining honest options are:
+   (a) the deeper C-level audit suggested in Update (13) point 1 — trace
+   `linux_prep_boot()` from its very first line, verifying each step
+   actually completes rather than assuming it does, ideally by adding
+   diagnostic `iprintf`s at each stage boundary and checking whether
+   *any* of them are visible before the crash (they wouldn't be, since
+   serial is only torn down later — this could actually distinguish "how
+   far did we get" if the crash is a clean hang vs image_size corruption
+   before serial_teardown), or (b) accepting this tier of PLAN.md as
+   genuinely unresolved for now and moving attention elsewhere.
+4. Before any further live DFU cycle of any kind, re-read Updates
+   (10)-(13) and the environment gotchas memory in full.
+
+## Update 2026-09-08 (14): screen-based checkpoint instrumentation, before reaching for UART hardware
+
+Realized there's a cheaper diagnostic than physical UART: `iprintf()`
+only goes to serial (unobservable without hardware), but `screen_puts()`
+writes straight to the phone's own framebuffer and is already used
+elsewhere in this exact boot path (`"Booting Linux..."`, etc.) — zero
+hardware modification needed, just watch the screen during the live test.
+
+**One real constraint found while adding this:** `lowlevel_cleanup()`
+(`entry.c`, called for every boot path right before the final jump)
+disables the MMU. `gFramebuffer` is a VA-space alias
+(`0xfb0000000`-based) that only resolves through the live page tables —
+so any `screen_puts()` after the MMU goes off wouldn't just be
+unreliable, it'd write to that same numeric value treated as a raw
+physical address, almost certainly unmapped on this device's ~1GiB
+physical map, risking a fault of its own that would contaminate the very
+diagnostic this is trying to produce. So checkpoints were placed only up
+to the point immediately before `lowlevel_cleanup()` runs — everything
+`linux_prep_boot()` does, plus the identity-mapping setup right after it,
+which covers the entire span every fix so far (Updates 6, 8, 9, 11, 12)
+has targeted.
+
+Added checkpoints (`src/modules/linux/linux.c`, `src/kernel/entry.c`),
+each a distinct `screen_puts("OMERTA LP<n>: ...")`, in order:
+
+- **LP1** — entry to `linux_prep_boot()`
+- **LP2** — ramdisk staged
+- **LP3** — FDT overlay applied (or `LP-FAIL` with which step)
+- **LP4a** — resolved `disp` pointer address (prints the actual value)
+- **LP4b** — after the `pixfmt0` register write
+- **LP4** — after all display-register writes
+- **LP5** — whether SEPFW was found/reserved in the ADT
+- **LP6** — kernel staging buffer address + allocated size
+- **LP7** — LZMA decompress return code + actual output size
+- **LP7b** — resolved `image_size`
+- **LP8** — FDT copied into the staging buffer
+- **LP9** — `linux_prep_boot()` returning normally
+- **LP-LAST** — immediately before `lowlevel_cleanup()` (MMU still on) —
+  the last point any of this can possibly be reliable
+
+**Why LP4a/4b matter and weren't considered before:** the display-register
+poke (`disp[0x402c/4]` etc., resolved via `dt_get_u32_prop("disp0",
+"reg")`) is untouched by any of the four fixes so far. If `"disp0"`
+doesn't resolve correctly against this device's real ADT, `disp` becomes
+garbage and the writes hit an arbitrary I/O register instead of the
+display controller — a real, previously-unconsidered candidate for an
+early silent hang. LP4a prints the resolved address so this is checkable
+directly instead of assumed.
+
+Rebuilt clean (`make all`, no errors, `build/Pongo.bin`, 2026-09-08,
+see file timestamp for exact build time). **Not yet live-tested.** Next
+live test should watch the screen closely and report the LAST visible
+`OMERTA LP*` line when the device resets — that pinpoints the crash to
+one of ~10 spans for the first time in five attempts, instead of another
+guess. If `LP-LAST` is reached and the device still resets, the crash is
+narrowed to `lowlevel_cleanup()` / `apply_tunables()` /
+`linux_boot()`'s memcpy / the final `jump_to_image` — at that point
+physical UART is genuinely the only remaining way to see further.
+
+**Round 2, same update:** live-tested the checkpoints above and the user
+reported the lines flashed by too fast to read even watching closely.
+Added a ~700ms busy-wait (`omerta_diag_pause()`, a pure `get_ticks()`
+poll) after every checkpoint — deliberately not this file's existing
+`spin()` helper, since it calls `enable_interrupts()` on exit and
+interrupts are already deliberately disabled by this point in the real
+boot sequence; toggling that as a diagnostic side effect would change the
+very conditions being diagnosed. Checked `wdt_enable()` first — it's dead
+code (`return` before an `#if 0` body), so no live hardware watchdog to
+race against the added ~8-9 seconds of total pause time. Rebuilt clean.
+**Ready for the actual live retest** — watch the screen and report the
+last visible line; each one should now be on-screen for a comfortable
+~0.7s.
+
+## Update 2026-09-08 (15): sixth live test — first real crash localization, plus a fifth real bug found and a fix now pending its own retest
+
+Live test with the user present, `usbfs_memory_mb` bumped to 512,
+`sudo /home/omerta/checkra1n/checkra1n -c -k build/Pongo.bin -E`
+succeeded (pongoOS live), then `sudo python3 scripts/load_linux.py -k
+Image.lzma -d dtbpack -r <pmbootstrap initramfs> -c "earlycon=s5l,mmio32,
+0x20a0c0000 console=ttySAC0"`. All four transfer stages reported success.
+Device reset to the same known-erased baseline as all five prior
+attempts (`ideviceinfo`: `16H88`/`Unactivated`/`BrickState: true`, same
+UDID) — **but this time, with the Update (14) round-2 pacing fix, the
+user could actually read the checkpoints and reported the last one seen
+was `LP4a`** (`src/modules/linux/linux.c`, prints the resolved `disp`
+pointer address right before the display-register poke).
+
+**This is the first real crash localization in six attempts.**
+`dt_get_u32_prop()` (`src/kernel/dtree_getprop.c`) calls `panic()`
+immediately if `"disp0"` isn't found in the ADT or `"reg"` isn't found on
+it — no panic was seen, LP4a printed cleanly — so the ADT lookup itself
+succeeded and `disp` is a real, ADT-sourced address. The crash is
+therefore in the very next lines: the register read-modify-write
+`*pixfmt0 = (*pixfmt0 & 0xF00FFFFFu) | 0x05200000u;` (or the 3
+`colormatrix_*` writes right after it) — a genuinely different kind of
+access than anything checked before. Every prior checkpoint on this path
+(`LP1`-`LP4a`, all using `screen_puts()`) writes to `gFramebuffer`, a
+plain memory buffer. This poke instead targets **display-controller MMIO
+registers** at `disp + {0x402c, 0x40b4, 0x40cc, 0x40d4, 0x40dc}` — a
+fundamentally riskier class of access (could easily fault, hang, or wedge
+a clock-gated/security-restricted peripheral) that had gone completely
+unexamined across all five prior attempts and four unrelated bug fixes.
+
+**A fifth real, well-sourced issue, found by reading this code's own
+git history:** `git log -- src/modules/linux/linux.c` shows these exact
+offsets were introduced in upstream commit `baa6c5d` ("Bring back
+simplefb setup"), part of a lineage that includes several
+device-specific "shame list" fixes for other models (`025f4a2`, `0bf099e`,
+`fcfd41f`, `d21bf7f`, `99da5d8` — 7/7 Plus, X, iPad Pro, iPhone 8/8
+Plus). **This project's exact target device (N61/iPhone 6, A8) has no
+commit anywhere in this file's history that specifically validates or
+adjusts these register offsets for it.** The *only* place `N61` appears
+in this file is `linux_fill_fdt_props()` (an unrelated function, a
+framebuffer FDT `width` stride-padding quirk that N61 shares with
+6S/7/8) — that says nothing about whether the DCP register layout at
+these specific offsets is even the same on A8 as on whatever hardware
+these offsets were tuned against. Given Update (11)'s broader finding
+that this loader's Linux support was only ever validated against
+A10-family hardware, a wrong register layout on A8's display-pipe IP
+revision is a concrete, plausible explanation for a hard fault/hang right
+here.
+
+**Fix applied (diagnostic-first, not a guessed permanent fix):** skipped
+the `pixfmt0`/`colormatrix_*` register writes entirely (replaced with
+`LP4b`/`LP4` checkpoints noting they were skipped), keeping the `disp`
+pointer computation and the existing `LP4a` checkpoint intact. Confirmed
+safe to skip structurally: `disp` (and the 5 macros built from it) are
+used nowhere else in the file — grepped to confirm. Functionally, this
+poke exists purely to force the display hardware's *actual* pixel format
+to match what the FDT's `simple-framebuffer` node already declares
+independently (`format = "a8b8g8r8"`, set unconditionally in
+`linux_fill_fdt_props()` regardless of whether this poke ran) — so
+skipping it risks wrong on-screen colors under Linux at worst, not a
+boot failure, and it is *not* needed for pongoOS's own `screen_puts()`
+text (already proven working through `LP4a`, since that's a plain
+framebuffer memory write, unrelated to this MMIO register access).
+Rebuilt clean (`build/Pongo.bin`, 676,192 bytes, 2026-09-08 18:56).
+
+**Not yet live-tested.** Next live test should watch for the last
+visible `OMERTA LP*` line again:
+- If it now gets past `LP4`/`LP5`/... further than `LP4a` — this
+  register poke was the actual crash cause for all six attempts, a
+  genuinely new and different root cause from any of the four bugs fixed
+  in Updates (6)-(12) (all of which turned out to be real but not the
+  actual blocker). Next step would be to either find/derive the correct
+  A8-specific register offsets, or just leave this poke permanently
+  skipped and accept cosmetic color risk in exchange for a booting
+  console.
+- If it crashes again at the same point (immediately after the new
+  `LP4a`, i.e. before even reaching the new "SKIPPED" `LP4b`/`LP4`
+  lines) — that would be a very strange result implying the crash isn't
+  in the poke at all, and reopens the question of what's really
+  happening around the `disp`/ADT lookup itself despite no panic being
+  observed.
+- If it proceeds further but still resets before `LP-LAST` — same
+  checkpoint-narrowing approach continues into `LP5`
+  (SEPFW/ADT reservation check), `LP6`-`LP7b` (kernel decompression,
+  already the subject of Updates 9/12's fixes), or `LP8`/`LP9`
+  (FDT copy / normal return).
+
+**Seventh live attempt (same session, same build): inconclusive — user
+missed reading the last visible line.** Same DFU/checkra1n/load_linux.py
+sequence against the Update (15) build (poke skipped); device reset to
+the same known-erased baseline again (`ideviceinfo` confirmed, USB
+device number changed from prior enumeration confirming a fresh
+cycle happened), but the checkpoint line wasn't caught in time even at
+~0.7s/line. **No new data from this attempt — do not count it as
+evidence either way for the Update (15) fix.** Paused further live
+cycles here by user choice rather than keep guessing.
+
+**Recommendation for the next live attempt:** don't rely on reading the
+screen live — **film the phone's screen with a second camera during the
+boot sequence**, then review the recording frame-by-frame (or send a
+photo/frame of the last visible line) afterward. This removes the
+timing-pressure failure mode entirely and should be the standard method
+from here on, not just a one-off suggestion. The Update (15) build
+(`build/Pongo.bin`, 676,192 bytes, 2026-09-08 18:56, display-register
+poke skipped) is still the correct one to test next — no code changes
+are needed before the next attempt, just a better capture method.
+
+## Update 2026-09-08 (16): independent offline verification of LP4a via the real N61 firmware (blacktop/ipsw)
+
+Offline-only, no device touched. The user installed `blacktop/ipsw`
+(confirmed on `PATH` via snap, v3.1.713) and pointed out
+`~/Downloads/iPhone_4.7_12.5.8_16H88_Restore.ipsw` is sitting on disk —
+this is the **exact same build** as the real target device (iPhone7,2,
+16H88), not just a same-generation reference.
+
+Used it to extract and decode the real DeviceTree
+(`ipsw extract --dtree`, `ipsw dtree`) and cross-check the `disp0` node
+against what `linux.c`'s `dt_get_u32_prop("disp0", "reg")` call (the
+LP4a checkpoint) computes at runtime. Confirmed:
+
+- Board Config `N61AP`, `iPhone7,2`, `iPhone 6` — exact match to the
+  physical device, not inferred.
+- The real `disp0` node's `reg` property is 5 address/size tuples, the
+  first being `addr=0x6200000 sz=0x100000`. `dt_get_u32_prop()`
+  (`dtree_getprop.c:29-38`) just `memcpy`s the first 4 bytes of the
+  prop into a `uint32_t` — i.e. it returns exactly `0x6200000`, the
+  correct base of that first tuple, not garbage from misreading a
+  wider/differently-shaped property.
+- This **independently confirms Update (15)'s reasoning was right**:
+  LP4a's `disp` pointer (`0x6200000 + gIOBase`) is a real, correctly
+  computed MMIO address for this exact device — the crash sequence for
+  all six prior identical live failures genuinely was downstream of a
+  legitimate address, not an ADT-resolution bug. No code change follows
+  from this (Update 15 already skips the poke); it's confirmation the
+  skip targets the right thing rather than a shot in the dark.
+
+Also extracted the matching `iBoot.n61.RELEASE.im4p` for future use
+(unopened this pass — the `disp0` DeviceTree check answered the
+immediate question). If the Update (15) skip build's next live test
+still fails before reaching `LP-LAST`, a good next ipsw-assisted step is
+disassembling this iBoot to see Apple's own T7000 display bring-up
+sequence (e.g. whether `power-gates`/`clock-gates` must be poked before
+`pixfmt0`/`colormatrix_*` are touched at all) — `ipsw fw iboot` on the
+extracted im4p, or `ipsw img4` first if it turns out to need
+IM4P-unwrapping. Both files are cached at `~/omerta-ipsw-work/` for
+reuse without re-extracting from the 3GB+ IPSW.
+
+**Status unchanged: still waiting on the next live test of the Update
+(15) build with filmed screen capture** — this update adds confidence,
+not a new blocker or a new fix.
+
+## Update 2026-09-13 (17/18): FDT collision guard added, found likely inert; `LP3a` added to confirm with data
+
+Between the last session and this one, `linux_dtree_overlay()`
+(`src/modules/linux/linux.c`) picked up a defensive fix: the unconditional
+`fdt_add_subnode(fdt, node, "memory@800000000")` under `/reserved-memory`
+(only reached when `gBootArgs->physBase > 0x800000000`) collides with
+`t7000.dtsi`'s own `hacky_reserved_mem: memory@800000000` node of the same
+name — the old code treated the resulting error as fatal. Fixed by
+checking `fdt_subnode_offset()` first and skipping the add if it's
+already there.
+
+Re-reading the two live attempts from the 09-08 session showed this
+branch was almost certainly never entered on the real device in the
+first place (both ran the old, unconditional code and returned success),
+implying `gBootArgs->physBase` equals exactly `0x800000000` on this
+hardware. Added `LP3a` to print `physBase` directly and confirm this
+with data rather than inference. Rebuilt clean, not live-tested yet at
+the time.
+
+## Update 2026-09-13 (19): live Attempt #9 shows the freeze is EARLIER than every prior session assumed
+
+Live-tested the Update 17/18 build with the user present and watching
+the screen closely. **Confirmed directly (not inferred): `"Booting
+Linux..."` was the literal last thing on screen — `OMERTA LP-LAST`
+(which has a multi-second busy-wait specifically so it can't be missed)
+never appeared before the reset.**
+
+Re-reading the 09-08 session's own logs found that neither of its two
+live attempts had actually *confirmed* `LP-LAST` legible either — both
+were inferred from indirect signals (a blurry photo/video, and a
+white-flash test result), never read directly. So this project has
+never once had a confirmed sighting of `LP-LAST` — Attempt #9 is the
+first time its *absence* was confirmed rather than assumed.
+
+Traced the code and found a genuinely new, previously-unexamined gap:
+`pongo_entry_cached()` (the function that runs the whole shell,
+`linux_prep_boot()`, and prints `"Booting Linux..."`) *returns* into
+`pongo_entry()`, which then runs three more steps that have never been
+checkpointed by anything — `lowlevel_set_identity()`,
+`rebase_pc(-gPongoSlide)`, and a second `set_exception_stack_core0()` —
+before ever reaching `LP-LAST`. Added four new checkpoints bisecting
+this span (`LP9c`-`LP9f`), same busy-wait pattern as `LP-LAST` for
+legibility. Rebuilt clean, not live-tested yet at the time.
+
+## Update 2026-09-13 (20): deskewed Attempt #9 photo, plus a strong new hypothesis — the diagnostic itself may be the cause
+
+The single Attempt #9 photo turned out to be salvageable: rotating it
+~35° (the phone was held at a steep angle to the camera) and cropping
+tight made every line legible. Confirmed the photo matches what the
+user reported live — `Booting Linux...` is the last line, nothing past
+it — and that this was the *old* build (Update 19's `LP9c`-`LP9f`
+checkpoints didn't exist yet in the binary this attempt actually ran).
+
+While adding the Update 19 checkpoints, found a strong new hypothesis:
+the three newly-instrumented steps are shared with the ordinary XNU
+boot path checkra1n uses on every device — well-exercised, unlikely to
+hide a new bug. But the very next line, `gFramebuffer =
+gBootArgs->Video.v_baseAddr` immediately followed by `LP-LAST`'s
+`screen_puts()`, is different: **XNU's boot path never does a
+`screen_puts()` after that reassignment** (it jumps straight to
+`exit_to_el1_image()`), so this project's own `LP-LAST` diagnostic is
+the first and only code ever to call `screen_puts()` through that
+post-identity-map framebuffer pointer. If `gBootArgs->Video.v_baseAddr`
+falls outside the `[0x800000000+g_phys_off, +ram_phys_size)` window
+`lowlevel_set_identity()` just mapped, using it as a VA would silently
+fault — meaning **the diagnostic itself could be the actual cause of
+the freeze**, not a real Linux-boot bug.
+
+Added `LP9g`, printed via the OLD (proven-good) `gFramebuffer` *before*
+the risky reassignment — reports `gBootArgs->Video.v_baseAddr`, the
+identity-mapped range, and an explicit `IN-RANGE`/`OUT-OF-RANGE!!`
+verdict, so this gets checked with data instead of guessed. Rebuilt
+clean (`build/Pongo.bin`, 676,192 bytes, 2026-09-13 17:25), no errors,
+no new warnings.
+
+**Not yet live-tested.** Next live attempt (#10): report the
+`LP9c`-`LP9g` lines verbatim — the `LP9g` verdict matters most. If
+`OUT-OF-RANGE!!`, that's a confirmed root cause (fix: skip the
+Linux-path framebuffer reassignment, or move `LP-LAST` before it). If
+`IN-RANGE`, the freeze is genuinely in `lowlevel_cleanup()`/
+`apply_tunables()`/`linux_boot()`/the final jump, same as always
+assumed. Full detail (including the exact photo-reading process) is in
+`phase3/kernel/pongo-linux-src/TESTLOG.md` (local-only — that directory
+is gitignored since it's a vendored upstream fork).
