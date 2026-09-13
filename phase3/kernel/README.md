@@ -1205,3 +1205,54 @@ Linux-path framebuffer reassignment, or move `LP-LAST` before it). If
 assumed. Full detail (including the exact photo-reading process) is in
 `phase3/kernel/pongo-linux-src/TESTLOG.md` (local-only — that directory
 is gitignored since it's a vendored upstream fork).
+
+## Update 2026-09-13 (21): Attempt #10 — a real panic captured on camera, root cause found and fixed
+
+Ran the Update 20 (`LP9g`) build live. Two screen-recording videos came
+back unreadable (phone held too close for the webcam to focus — genuine
+optical defocus, not motion blur). A still photo taken afterward,
+though, caught something this project has never seen before in ~10 live
+attempts across two sessions: **an actual panic screen**, not another
+silent black-screen reset.
+
+After correcting for the photo's EXIF rotation, the panic read: `panic:
+caught sync exception with interrupts masked`, `crashed process:
+kernel`, a register dump, and — critically — `ELR: 0x0000000100 01ae18`
+(`image_base + 0x1ae18`). Resolving that address against the actual
+built binary's own symbol table (`llvm-nm-21 build/Pongo`, not guessed)
+puts it at `.Lcopy16 + 0x8`, **inside `_memcpy` itself**. (The fp/lr
+backtrace in the same panic was stack garbage — resolved to unrelated
+newlib internals with no coherent call chain — so only the ELR, the
+actual faulting PC, was trustworthy here.)
+
+**Root cause, confirmed from code**: `linux_boot()`
+(`src/modules/linux/linux.c`) calls `memcpy(gEntryPoint, gLinuxStage,
+gLinuxStageSize)`, and its own existing comment already documented that
+this runs *after* `lowlevel_cleanup()` disables the MMU. Per the ARMv8
+architecture, with the MMU off every data access is treated as
+Device-nGnRnE memory, which explicitly forbids Advanced SIMD/NEON
+load-store instructions — and this codebase's `memcpy` is a `clang -O3`
+auto-vectorized generic libc routine that copies in 16-byte NEON chunks
+(hence the `.Lcopy16` label). That's a guaranteed data abort on the
+very first vector access, unconditionally, on every call regardless of
+source/dest/size — which is exactly why every one of the ~10 live
+attempts across both sessions died at this identical point no matter
+which of the four earlier real bugs (x0/FDT handoff ×2, decompression
+heap overflow, LZMA sentinel) got fixed. None of them ever mattered:
+execution never got past this memcpy.
+
+**Fix**: replaced that `memcpy()` with `smemcpy128()`
+(`src/boot/entry.S`) — a hand-written copy routine that already exists
+in this exact codebase for exactly this situation (`trampoline_entry` in
+`stage3.c` uses it for a copy that also has to happen before the
+MMU/EL1 environment is set up), using only plain-X-register
+`ldp`/`stp`, which Device memory does permit. Rebuilt clean
+(`build/Pongo.bin`, 676,192 bytes, 2026-09-13 17:48).
+
+**Not yet live-tested — this is the first fix in the whole project
+backed by an actual captured panic and a symbol-resolved fault address,
+rather than inference from a silent reset.** Next live attempt: if
+this is right, the failure signature should finally change — either
+Linux produces visible output, or it fails further in, which would
+itself be real progress for the first time in 10 attempts. Full detail
+in `phase3/kernel/pongo-linux-src/TESTLOG.md` (local-only, gitignored).
