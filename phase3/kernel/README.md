@@ -1286,3 +1286,29 @@ that fix finally gets tested. Rebuilt clean (`build/Pongo.bin`,
 **Not yet live-tested — this will be the first attempt to actually
 reach the Update 21 fix with nothing else in the way.** Full detail in
 `phase3/kernel/pongo-linux-src/TESTLOG.md` (local-only, gitignored).
+
+## Update 2026-09-13 (23): Attempt #12 — new failure signature (red pixelated noise, no text/panic), not yet diagnosed
+
+Live-tested the Update 22 build (`LP9g` removed, `smemcpy128` fix
+intact). The user did not get to read or capture any `OMERTA LP*`
+checkpoint text or a panic screen this time — reported result: screen
+went black, then showed red pixelated/glitched noise, then the red died
+out and the screen stayed black. No photo was captured.
+
+This is a new, third visual failure signature, distinct from both
+`"Booting Linux..."` freezing with no further checkpoints (Attempts
+#7-#9) and a clean/double register-dump panic (Attempts #10-#11).
+Device state after this attempt (normal-iOS USB re-enumeration,
+`ideviceinfo` baseline) was not confirmed this round. Leading
+hypothesis, untested: execution may have proceeded past the
+`smemcpy128` fix into genuinely uninstrumented territory (nothing is
+checkpointed between `LP-LAST` and the actual Linux jump target), where
+a wild jump/exception with the MMU off and no exception vectors
+installed yet could produce raw noise on the panel before a hard reset
+— but an ordinary hard-reset display artifact (same as every prior
+reset, just not photographed before) hasn't been ruled out either.
+
+**Next step**: re-run the Update 22 build, capture a still photo (not
+video) of whatever appears, and check `lsusb`/`ideviceinfo` immediately
+after to confirm device state. Full detail in
+`phase3/kernel/pongo-linux-src/TESTLOG.md` (local-only, gitignored).
